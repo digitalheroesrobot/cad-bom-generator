@@ -128,8 +128,40 @@ python -m app.services.dxf_engine.ai_gnn.train \
   --test-graphs labeled/test_001_v4.pt \
   --classes classes.json \
   --output models/dxf_relation_aware_gnn_v4.pt \
-  --epochs 200 --patience 25
+  --epochs 500 --patience 25 --checkpoint-every 100
 ```
+
+Training checkpoints are written under `models/checkpoints/`:
+
+- `checkpoint_epoch_0100.pt`, `checkpoint_epoch_0200.pt`, etc. retain
+  numbered snapshots every 100 completed epochs.
+- `checkpoint_latest.pt` is atomically replaced with the newest resumable
+  snapshot.
+- The final `dxf_relation_aware_gnn_v4.pt` remains the best-validation model
+  intended for inference; it is not the same thing as the latest training
+  snapshot.
+
+To resume after an interruption, keep the same graph splits, class mapping,
+and model configuration, then pass the latest checkpoint. The `--epochs`
+value is the desired total epoch count, not the number of additional epochs:
+
+```bash
+python -m app.services.dxf_engine.ai_gnn.train \
+  --train-graphs labeled/train_001_v4.pt labeled/train_002_v4.pt \
+  --val-graphs labeled/validation_001_v4.pt \
+  --test-graphs labeled/test_001_v4.pt \
+  --classes classes.json \
+  --output models/dxf_relation_aware_gnn_v4.pt \
+  --epochs 500 --patience 25 --checkpoint-every 100 \
+  --resume-from models/checkpoints/checkpoint_latest.pt
+```
+
+A resumable snapshot stores model weights, optimizer state, best-validation
+weights/loss, early-stopping counter, and random-number-generator state.
+Resume validation rejects mismatched graph splits, feature dimensions, class
+mapping, or model architecture settings rather than silently continuing an
+incompatible run. The periodic checkpoint is a training-resume artifact;
+use the final best-validation model file for inference.
 
 The loss supervises the fused estimate and applies smaller auxiliary losses
 to the direct and relation-based heads. Checkpoint selection uses validation
