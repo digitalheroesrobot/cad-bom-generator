@@ -10,7 +10,7 @@ def _edge_key(edge_type):
     return "|".join(str(part) for part in edge_type)
 
 
-class RelationMessage(nn.Module):
+class RelationMatchingNetwork(nn.Module):
     """Relation-specific edge-aware message and attention score."""
 
     def __init__(self, hidden_channels: int, edge_channels: int):
@@ -48,7 +48,7 @@ class HeterogeneousMessagePassing(nn.Module):
         self.messages = nn.ModuleDict()
         for edge_type in self.edge_types:
             width = int(edge_dims.get(_edge_key(edge_type), 1))
-            self.messages[self.edge_keys[edge_type]] = RelationMessage(hidden_channels, width)
+            self.messages[self.edge_keys[edge_type]] = RelationMatchingNetwork(hidden_channels, width)
         self.updates = nn.ModuleDict({
             node_type: nn.Sequential(
                 nn.Linear(hidden_channels * 2, hidden_channels),
@@ -98,7 +98,7 @@ class HeterogeneousMessagePassing(nn.Module):
         return updated
 
 
-class RelationReasoningLayer(nn.Module):
+class GeometricReasoningNetwork(nn.Module):
     """Cross-node-type reasoning after typed message passing.
 
     Stacked heterogeneous layers explicitly support multi-hop paths such as
@@ -152,7 +152,7 @@ class DXFSemanticGNN(nn.Module):
                 edge_dims, dropout,
             ) for _ in range(max(2, num_layers))
         ])
-        self.relation_reasoner = RelationReasoningLayer(
+        self.relation_reasoner = GeometricReasoningNetwork(
             self.node_types, hidden_channels, dropout
         )
         self.classifier = nn.Sequential(
