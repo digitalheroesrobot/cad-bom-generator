@@ -91,7 +91,7 @@ def _line_parts(geometry):
 
 
 def _geometry_feature(element, scale: float, origin):
-    """Build 24 geometry inputs; length and area are intentionally excluded.
+    """Build 25 geometry inputs; length and area are intentionally excluded.
 
     Radius is retained as the explicitly permitted geometric descriptor.
     Ground-truth radius targets are stored separately and never copied from
@@ -140,7 +140,7 @@ def _geometry_feature(element, scale: float, origin):
 
 
 def _dimension_feature(dimension, scale: float, origin):
-    """Keep the original 15-dimensional dimension feature contract."""
+    """Build 17 dimension features, including endpoint direction and value-validity flags."""
     scale = max(abs(scale), 1e-9)
     endpoints = _get(dimension, "endpoints")
     p1 = _xy(endpoints[0]) if endpoints else None
@@ -873,6 +873,10 @@ def build_semantic_graph(
         if dim_type in {"RADIUS", "DIAMETRIC"}:
             center = _xy(_get(dimension, "center"))
             measure = _xy(_get(dimension, "measurement_point"))
+            if center is None and len(endpoints) >= 2:
+                center = _xy(endpoints[0])
+            if measure is None and len(endpoints) >= 2:
+                measure = _xy(endpoints[-1])
             if center:
                 attachment_points.append(("measures_from", center, "CENTER"))
             if measure:
@@ -1221,6 +1225,7 @@ def build_semantic_graph(
             "normalized_endpoint_distance",
             "overlap_ratio",
             "confidence",
+            "endpoint_distance_valid",
         ],
         "edge_feature_dims": {
             "|".join(edge_type): int(data[edge_type].edge_attr.size(-1))
