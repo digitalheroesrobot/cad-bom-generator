@@ -173,16 +173,19 @@ class DXFSemanticGNN(nn.Module):
 
     def forward(self, data):
         x_dict = {n: self.input_proj[n](data[n].x) for n in self.node_types}
+        # Local geometry-only representation is retained for the direct baseline.
+        geometry_local = x_dict["geometry"]
         for layer in self.message_layers:
             x_dict = layer(x_dict, data)
         x_dict = self.relation_reasoner(x_dict)
-        geometry = x_dict["geometry"]
-        class_logits = self.classifier(geometry)
+        geometry_relation = x_dict["geometry"]
+        class_logits = self.classifier(geometry_relation)
 
-        # softplus ensures positive values; log1p preserves the training target scale.
-        direct_raw = F.softplus(self.direct_head(geometry))
-        relation_raw = F.softplus(self.relation_head(geometry))
-        fusion = torch.sigmoid(self.fusion_head(geometry))
+        # Direct branch sees local geometry only; relation branch sees the
+        # Dimension/Anchor/Text/Geometry message-passing result.
+        direct_raw = F.softplus(self.direct_head(geometry_local))
+        relation_raw = F.softplus(self.relation_head(geometry_relation))
+        fusion = torch.sigmoid(self.fusion_head(geometry_relation))
         fused_raw = fusion * direct_raw + (1.0 - fusion) * relation_raw
         evidence = {
             "direct_log": torch.log1p(direct_raw),
