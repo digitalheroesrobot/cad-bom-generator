@@ -159,6 +159,8 @@ def _dimension_feature(dimension, scale: float, origin):
     onehot = [1.0 if kind == item else 0.0 for item in DIMENSION_TYPES]
     value = _get(dimension, "length")
     actual = _get(dimension, "actual_length")
+    value_valid = value is not None and math.isfinite(_safe_float(value, float("nan")))
+    actual_valid = actual is not None and math.isfinite(_safe_float(actual, float("nan")))
     return [
         _safe_float(value) / scale,
         _safe_float(actual) / scale,
@@ -167,6 +169,7 @@ def _dimension_feature(dimension, scale: float, origin):
         (my - oy) / scale,
         dx, dy,
         *onehot,
+        float(value_valid), float(actual_valid),
     ]
 
 
@@ -425,6 +428,7 @@ def _make_relation_attrs(distance, angle_diff, intersection_length,
         _safe_float(endpoint_distance) / scale,
         _safe_float(overlap_ratio),
         max(0.0, min(1.0, _safe_float(confidence))),
+        float(endpoint_distance is not None and math.isfinite(_safe_float(endpoint_distance, float("nan")))),
     ]
 
 
@@ -512,7 +516,7 @@ def build_semantic_graph(
         [_geometry_feature(x, scale_safe, origin) for x in geometry_elements], 25
     )
     data["dimension"].x = feature_tensor(
-        [_dimension_feature(x, scale_safe, origin) for x in dimension_elements], 15
+        [_dimension_feature(x, scale_safe, origin) for x in dimension_elements], 17
     )
     data["text"].x = feature_tensor(
         [_text_feature(x, scale_safe, origin) for x in text_elements], 41
@@ -557,6 +561,21 @@ def build_semantic_graph(
     # radius is the raw DXF entity radius; analytic radius_measured is separate.
     data["geometry"].radius = [optional_measurement(x, "radius") for x in geometry_elements]
     data["geometry"].radius_measured = [optional_measurement(x, "radius_measured") for x in geometry_elements]
+    def valid_source_value(item, field):
+        raw = _get(item, field)
+        try:
+            return raw is not None and math.isfinite(float(raw))
+        except (TypeError, ValueError):
+            return False
+    data["geometry"].measured_length_valid = torch.tensor(
+        [valid_source_value(x, "length") for x in geometry_elements], dtype=torch.bool
+    )
+    data["geometry"].measured_area_valid = torch.tensor(
+        [valid_source_value(x, "area") for x in geometry_elements], dtype=torch.bool
+    )
+    data["geometry"].radius_valid = torch.tensor(
+        [valid_source_value(x, "radius") for x in geometry_elements], dtype=torch.bool
+    )
     data["dimension"].dimension_type = [
         str(_get(x, "dimension_type", "UNKNOWN")) for x in dimension_elements
     ]
@@ -1119,16 +1138,16 @@ def build_semantic_graph(
     # zero edges in a particular drawing. This is essential when training a
     # single model over separate train/validation/test drawings.
     canonical_edge_dims = {
-        ("geometry", "near", "geometry"): 6,
-        ("geometry", "parallel", "geometry"): 6,
-        ("geometry", "perpendicular", "geometry"): 6,
-        ("geometry", "intersects", "geometry"): 6,
-        ("geometry", "touches", "geometry"): 6,
-        ("geometry", "overlaps", "geometry"): 6,
-        ("geometry", "contains", "geometry"): 6,
-        ("geometry", "within", "geometry"): 6,
-        ("geometry", "connected", "geometry"): 6,
-        ("geometry", "collinear", "geometry"): 6,
+        ("geometry", "near", "geometry"): 7,
+        ("geometry", "parallel", "geometry"): 7,
+        ("geometry", "perpendicular", "geometry"): 7,
+        ("geometry", "intersects", "geometry"): 7,
+        ("geometry", "touches", "geometry"): 7,
+        ("geometry", "overlaps", "geometry"): 7,
+        ("geometry", "contains", "geometry"): 7,
+        ("geometry", "within", "geometry"): 7,
+        ("geometry", "connected", "geometry"): 7,
+        ("geometry", "collinear", "geometry"): 7,
         ("geometry", "has_anchor", "anchor"): 2,
         ("dimension", "describes", "geometry"): 2,
         ("dimension", "measures_from", "geometry"): 2,
@@ -1191,7 +1210,7 @@ def build_semantic_graph(
         },
         "feature_dims": {
             "geometry": 25,
-            "dimension": 15,
+            "dimension": 17,
             "text": 41,
             "anchor": 12,
         },
