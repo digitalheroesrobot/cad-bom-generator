@@ -1,0 +1,211 @@
+from __future__ import annotations
+
+import math
+import torch
+
+from .model import DXFSemanticGNN
+
+
+def _optional_float(values, index):
+    try:
+        value = float(values[index])
+        return value if math.isfinite(value) else None
+    except (TypeError, ValueError, IndexError):
+        return None
+
+
+def _edge_candidates(data, edge_type, geometry_index):
+    """Return source-node candidates attached to one geometry target."""
+    if edge_type not in data.edge_types:
+        return []
+    store = data[edge_type]
+    edge_index = store.edge_index
+    edge_attr = getattr(store, "edge_attr", None)
+    results = []
+    for edge_i in range(edge_index.size(1)):
+        source_index = int(edge_index[0, edge_i])
+        target_index = int(edge_index[1, edge_i])
+        if target_index != geometry_index:
+            continue
+        attrs = edge_attr[edge_i].detach().cpu().tolist() if edge_attr is not None else []
+        results.append((source_index, attrs))
+    return results
+
+
+def _dimension_anchor_details(data, dimension_index, relation):
+    edge_type = ("dimension", relation, "anchor")
+    if edge_type not in data.edge_types:
+        return None
+    edge_index = data[edge_type].edge_index
+    anchor_ids = data["anchor"].element_id
+    coordinates = getattr(data["anchor"], "coordinates", [])
+    kinds = getattr(data["anchor"], "anchor_kind", [])
+    for edge_i in range(edge_index.size(1)):
+        if int(edge_index[0, edge_i]) != dimension_index:
+            continue
+        anchor_index = int(edge_index[1, edge_i])
+        return {
+            "anchor_id": str(anchor_ids[anchor_index]),
+            "anchor_kind": (
+                str(kinds[anchor_index]) if anchor_index < len(kinds) else "UNKNOWN"
+            ),
+            "coordinates": (
+                list(coordinates[anchor_index])
+                if anchor_index < len(coordinates) else None
+            ),
+        }
+    return None
+
+
+def _related_dimensions(data, dimension_index):
+    """Expose dimension-dimension candidate edges for each attached dimension."""
+    records = []
+    handles = data["dimension"].source_handle
+    kinds = getattr(data["dimension"], "dimension_type", [])
+    values = getattr(data["dimension"], "display_value", [])
+    relations = ("near", "parallel", "same_axis", "chain_candidate")
+    for relation in relations:
+        edge_type = ("dimension", relation, "dimension")
+        if edge_type not in data.edge_types:
+            continue
+        edge_index = data[edge_type].edge_index
+        edge_attr = getattr(data[edge_type], "edge_attr", None)
+        for edge_i in range(edge_index.size(1)):
+            src = int(edge_index[0, edge_i])
+            dst = int(edge_index[1, edge_i])
+            if src == dimension_index:
+                other = dst
+            elif dst == dimension_index:
+                other = src
+            else:
+                continue
+            attrs = edge_attr[edge_i].detach().cpu().tolist() if edge_attr is not None else []
+            records.append({
+                "dimension_handle": str(handles[other]),
+                "relation": relation,
+                "dimension_type": str(kinds[other]) if other < len(kinds) else "UNKNOWN",
+                "display_value": _optional_float(values, other),
+                "normalized_center_distance": attrs[0] if len(attrs) > 0 else None,
+                "angle_difference": attrs[1] if len(attrs) > 1 else None,
+                "endpoint_gap": attrs[2] if len(attrs) > 2 else None,
+                "axis_gap": attrs[3] if len(attrs) > 3 else None,
+                "candidate_confidence": attrs[4] if len(attrs) > 4 else None,
+            })
+    return records
+
+
+def predict_geometry(data, checkpoint_path: str, device: str | None = None):
+    """Predict class and independent geometry measurements.
+
+    `predicted_*` values come from the learned GNN regression head.
+    `analytic_*` values are merely reported for later fusion; they are not
+    inputs to the GNN. Dimension and dimension-chain records are candidates,
+    not guaranteed learned associations.
+    """
+    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    if data.graph_metadata.get("feature_version") != checkpoint.get("feature_version"):
+        raise ValueError(
+            "GNN feature version mismatch; rebuild graph and retrain checkpoint."
+        )
+    model = DXFSemanticGNN(
+        metadata=data.metadata(),
+        input_dims=checkpoint["input_dims"],
+        edge_dims=checkpoint.get("edge_dims", data.graph_metadata.get("edge_feature_dims", {})),
+        hidden_channels=checkpoint["hidden_channels"],
+        num_classes=max(1, max(checkpoint.get("class_to_id", {}).values(), default=-1) + 1),
+        num_layers=checkpoint["num_layers"],
+        dropout=checkpoint.get("dropout", 0.20),
+    ).to(device)
+    model.load_state_dict(checkpoint["model_state_dict"])
+    model.eval()
+    data = data.to(device)
+    with torch.no_grad():
+        logits, measurement_log, _ = model(data)
+        if checkpoint.get("class_to_id"):
+            probabilities = logits.softmax(dim=-1)
+            scores, class_ids = probabilities.max(dim=-1)
+        else:
+            scores = torch.zeros(logits.size(0), device=device)
+            class_ids = torch.zeros(logits.size(0), dtype=torch.long, device=device)
+
+    id_to_class = {v: k for k, v in checkpoint.get("class_to_id", {}).items()}
+    geometry_handles = data["geometry"].source_handle
+    dimension_handles = data["dimension"].source_handle
+    text_handles = data["text"].source_handle
+    dimension_types = getattr(data["dimension"], "dimension_type", [])
+    dimension_values = getattr(data["dimension"], "display_value", [])
+    dimension_actual_values = getattr(data["dimension"], "actual_value", [])
+    text_contents = getattr(data["text"], "content", [])
+    analytic_lengths = getattr(data["geometry"], "measured_length", [])
+    analytic_areas = getattr(data["geometry"], "measured_area", [])
+    analytic_radii = getattr(data["geometry"], "radius", [])
+
+    predictions = []
+    for geometry_index in range(len(class_ids)):
+        dimension_candidates = []
+        for relation in ("measures_from", "measures_to", "describes"):
+            edge_type = ("dimension", relation, "geometry")
+            for dimension_index, attrs in _edge_candidates(data, edge_type, geometry_index):
+                record = {
+                    "dimension_handle": str(dimension_handles[dimension_index]),
+                    "relation": relation,
+                    "anchor": _dimension_anchor_details(data, dimension_index, relation),
+                    "dimension_type": (
+                        str(dimension_types[dimension_index])
+                        if dimension_index < len(dimension_types) else "UNKNOWN"
+                    ),
+                    "display_value": _optional_float(dimension_values, dimension_index),
+                    "actual_value": _optional_float(dimension_actual_values, dimension_index),
+                    "normalized_distance": attrs[0] if len(attrs) > 0 else None,
+                    "candidate_confidence": attrs[1] if len(attrs) > 1 else None,
+                    "related_dimensions": _related_dimensions(data, dimension_index),
+                }
+                dimension_candidates.append(record)
+
+        unique_dimensions = {}
+        for item in dimension_candidates:
+            key = (item["dimension_handle"], item["relation"])
+            unique_dimensions[key] = item
+
+        text_candidates = []
+        for text_index, attrs in _edge_candidates(
+            data, ("text", "describes", "geometry"), geometry_index
+        ):
+            text_candidates.append({
+                "text_handle": str(text_handles[text_index]),
+                "content": (
+                    str(text_contents[text_index])
+                    if text_index < len(text_contents) else ""
+                ),
+                "normalized_distance": attrs[0] if len(attrs) > 0 else None,
+                "candidate_confidence": attrs[1] if len(attrs) > 1 else None,
+            })
+
+        predicted = torch.expm1(
+            measurement_log[geometry_index].clamp(min=0.0, max=30.0)
+        ).detach().cpu().tolist()
+        predicted_length, predicted_area, predicted_radius = [
+            float(value) for value in predicted
+        ]
+        predicted_type = id_to_class.get(int(class_ids[geometry_index]), "UNKNOWN")
+
+        predictions.append({
+            "element_id": data["geometry"].element_id[geometry_index],
+            "source_handle": str(geometry_handles[geometry_index]),
+            "predicted_type": predicted_type,
+            "confidence": float(scores[geometry_index].cpu()),
+            "predicted_length": predicted_length,
+            "predicted_area": predicted_area,
+            "predicted_radius": predicted_radius,
+            "analytic_length": _optional_float(analytic_lengths, geometry_index),
+            "analytic_area": _optional_float(analytic_areas, geometry_index),
+            "analytic_radius": _optional_float(analytic_radii, geometry_index),
+            # Backward-compatible aliases remain analytic values. New code
+            # should use explicit predicted_* / analytic_* field names.
+            "length": _optional_float(analytic_lengths, geometry_index),
+            "area": _optional_float(analytic_areas, geometry_index),
+            "dimension_candidates": list(unique_dimensions.values()),
+            "text_candidates": text_candidates,
+        })
+    return predictions
