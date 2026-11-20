@@ -160,13 +160,14 @@ Candidate relations remain evidence, not verified engineering constraints.
 
 ## Engineering limitations and next validation
 
-The present relation matcher learns from geometric candidate edges and their
-features. It is not yet a separately supervised dimension-to-geometry
-correspondence classifier. Likewise, the relation branch learns from graph
-context but does not yet encode hard CAD constraints such as equality,
-symmetry, part-to-whole sums, or exact Pythagorean equations as explicit
-constraint solvers. Those should be added as a separately validated
-geometric-reasoning stage with evidence provenance and confidence calibration.
+The present relation matcher uses edge-conditioned attention to score and
+aggregate candidate relationships. It is not yet a separately supervised
+dimension-to-geometry correspondence classifier. Equal-length and mirrored
+shape edges are geometric candidates, not hard constraints. Part-to-whole
+sums, area composition, and exact Pythagorean equations are not yet solved
+as explicit constraint systems; add these only with independently validated
+evidence and provenance. Fusion weights are learned weights, not calibrated
+probabilities.
 
 Before production BOM use, evaluate by held-out drawings from different
 projects, units, CAD conventions, and dimension styles. Report per-task MAE,
