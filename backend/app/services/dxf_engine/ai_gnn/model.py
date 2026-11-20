@@ -25,9 +25,10 @@ class RelationMessage(nn.Module):
 
     def forward(self, source_x, edge_attr):
         if edge_attr is None or edge_attr.size(-1) == 0:
-            edge_attr = source_x.new_zeros((source_x.size(0), 1))
-        message = torch.tanh(self.source(source_x) + self.edge(edge_attr))
-        score = self.score(torch.cat([message, self.source(source_x)], dim=-1))
+            edge_attr = source_x.new_zeros((source_x.size(0), self.edge.in_features))
+        projected_source = self.source(source_x)
+        message = torch.tanh(projected_source + self.edge(edge_attr))
+        score = self.score(torch.cat([message, projected_source], dim=-1))
         return message, score
 
 
