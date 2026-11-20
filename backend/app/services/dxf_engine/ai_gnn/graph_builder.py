@@ -739,6 +739,37 @@ def build_semantic_graph(
                 _add_edge(edge_store, edge_type, i, j, attrs)
                 pair_seen.add((i, j, relation))
 
+            # Candidate geometric constraints. These are evidence edges, not
+            # asserted engineering equalities or symmetry constraints.
+            length_a, length_b = float(ga.length), float(gb.length)
+            if min(length_a, length_b) > 1e-9:
+                length_delta = abs(length_a - length_b) / max(length_a, length_b)
+                if length_delta <= 0.02:
+                    _add_edge(
+                        edge_store, ("geometry", "equal_length_candidate", "geometry"),
+                        i, j, [length_delta, length_a / scale_safe, length_b / scale_safe],
+                    )
+            try:
+                from shapely.affinity import scale as affine_scale
+                ca, cb = ga.centroid, gb.centroid
+                mirror_axis_x = (float(ca.x) + float(cb.x)) * 0.5
+                reflected_b = affine_scale(
+                    gb, xfact=-1.0, yfact=1.0, origin=(mirror_axis_x, 0.0)
+                )
+                mirror_error = float(ga.hausdorff_distance(reflected_b))
+                mirror_tolerance = max(float(spatial_tolerance) * 0.02, 1e-6)
+                if mirror_error <= mirror_tolerance:
+                    _add_edge(
+                        edge_store, ("geometry", "mirror_candidate", "geometry"),
+                        i, j, [
+                            mirror_error / scale_safe,
+                            abs(float(ca.y) - float(cb.y)) / scale_safe,
+                            max(0.0, 1.0 - mirror_error / mirror_tolerance),
+                        ],
+                    )
+            except Exception:
+                pass
+
     # Preserve directed near edges from the original implementation and
     # analytic graph. Deduplicate all same-direction relation records.
     for edge_type, records in list(edge_store.items()):
@@ -746,7 +777,8 @@ def build_semantic_graph(
         for src, dst, attrs in records:
             key = (src, dst)
             previous = dedup.get(key)
-            if previous is None or attrs[-1] > previous[-1]:
+            score_index = 5 if len(attrs) >= 7 else len(attrs) - 1
+            if previous is None or attrs[score_index] > previous[score_index]:
                 dedup[key] = attrs
         edge_store[edge_type] = [
             (src, dst, attrs) for (src, dst), attrs in dedup.items()
@@ -1037,6 +1069,38 @@ def build_semantic_graph(
             )
 
     # --------------------------------------------------------------
+    # Text-to-dimension matching candidates (dimension annotation linkage)
+    # --------------------------------------------------------------
+    for ti, text in enumerate(text_elements):
+        query = _get(text, "bound") or _get(text, "bound_moved")
+        if query is None:
+            pos = _xy(_get(text, "position")) or _xy(_get(text, "position_moved"))
+            query = Point(pos) if pos else None
+        if query is None:
+            continue
+        matches = []
+        for di, dimension in enumerate(dimension_elements):
+            endpoints = _get(dimension, "endpoints") or []
+            p1 = _xy(endpoints[0]) if len(endpoints) >= 2 else None
+            p2 = _xy(endpoints[1]) if len(endpoints) >= 2 else None
+            center = _xy(_get(dimension, "center"))
+            try:
+                reference = LineString([p1, p2]) if p1 and p2 else (Point(center) if center else None)
+                if reference is None:
+                    continue
+                distance = float(query.distance(reference))
+            except Exception:
+                continue
+            if distance <= dimension_tolerance:
+                matches.append((distance, di))
+        for distance, di in sorted(matches)[:max_neighbors]:
+            confidence = max(0.0, 1.0 - distance / max(float(dimension_tolerance), 1e-9))
+            _add_edge(
+                edge_store, ("text", "labels", "dimension"), ti, di,
+                [distance / scale_safe, confidence],
+            )
+
+    # --------------------------------------------------------------
     # Dimension-to-dimension relationships
     # --------------------------------------------------------------
     # These are candidate relationships, not ground-truth constraints.
@@ -1152,6 +1216,8 @@ def build_semantic_graph(
         ("geometry", "within", "geometry"): 7,
         ("geometry", "connected", "geometry"): 7,
         ("geometry", "collinear", "geometry"): 7,
+        ("geometry", "equal_length_candidate", "geometry"): 3,
+        ("geometry", "mirror_candidate", "geometry"): 3,
         ("geometry", "has_anchor", "anchor"): 2,
         ("dimension", "describes", "geometry"): 2,
         ("dimension", "measures_from", "geometry"): 2,
@@ -1159,6 +1225,7 @@ def build_semantic_graph(
         ("dimension", "measures_from", "anchor"): 2,
         ("dimension", "measures_to", "anchor"): 2,
         ("text", "describes", "geometry"): 2,
+        ("text", "labels", "dimension"): 2,
         ("dimension", "near", "dimension"): 5,
         ("dimension", "parallel", "dimension"): 5,
         ("dimension", "same_axis", "dimension"): 5,
