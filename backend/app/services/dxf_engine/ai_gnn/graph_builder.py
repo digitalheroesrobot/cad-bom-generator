@@ -47,7 +47,7 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
     try:
         value = float(value)
         return value if math.isfinite(value) else default
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
 
 
@@ -58,7 +58,7 @@ def _xy(point):
         return float(point.x), float(point.y)
     try:
         return float(point[0]), float(point[1])
-    except (TypeError, ValueError, IndexError):
+    except (TypeError, ValueError, IndexError, OverflowError):
         return None
 
 
@@ -125,21 +125,22 @@ def _geometry_feature(element, scale: float, origin):
     entity_hash[_hash_bucket(entity_type, 8)] = 1.0
 
     # Existing analytical length and area are deliberately NOT features.
-    # Radius is an allowed shape descriptor; the supervised radius target is
-    # separately supplied in geometry.radius_y with its own mask.
-    radius = _safe_float(_get(element, "radius"), 0.0) / scale
+    # Do not feed the raw DXF radius value into the model: it is the desired
+    # supervised target and would leak the answer. Keep only availability.
+    radius_raw = _get(element, "radius")
+    radius_valid = radius_raw is not None and math.isfinite(_safe_float(radius_raw, float("nan")))
     return [
         (cx - ox) / scale, (cy - oy) / scale,
         width / scale, height / scale,
         math.log1p(max(0.0, vertex_count)),
         float(bool(_get(element, "is_closed", False))),
         float(bool(_get(element, "is_valid", True))),
-        *type_vector, *entity_hash, radius,
+        *type_vector, *entity_hash, float(radius_valid),
     ]
 
 
 def _dimension_feature(dimension, scale: float, origin):
-    """Keep the original 15-dimensional dimension feature contract."""
+    """Build 17 dimension features, including endpoint direction and value-validity flags."""
     scale = max(abs(scale), 1e-9)
     endpoints = _get(dimension, "endpoints")
     p1 = _xy(endpoints[0]) if endpoints else None
@@ -158,6 +159,8 @@ def _dimension_feature(dimension, scale: float, origin):
     onehot = [1.0 if kind == item else 0.0 for item in DIMENSION_TYPES]
     value = _get(dimension, "length")
     actual = _get(dimension, "actual_length")
+    value_valid = value is not None and math.isfinite(_safe_float(value, float("nan")))
+    actual_valid = actual is not None and math.isfinite(_safe_float(actual, float("nan")))
     return [
         _safe_float(value) / scale,
         _safe_float(actual) / scale,
@@ -166,6 +169,7 @@ def _dimension_feature(dimension, scale: float, origin):
         (my - oy) / scale,
         dx, dy,
         *onehot,
+        float(value_valid), float(actual_valid),
     ]
 
 
@@ -424,6 +428,7 @@ def _make_relation_attrs(distance, angle_diff, intersection_length,
         _safe_float(endpoint_distance) / scale,
         _safe_float(overlap_ratio),
         max(0.0, min(1.0, _safe_float(confidence))),
+        float(endpoint_distance is not None and math.isfinite(_safe_float(endpoint_distance, float("nan")))),
     ]
 
 
@@ -511,7 +516,7 @@ def build_semantic_graph(
         [_geometry_feature(x, scale_safe, origin) for x in geometry_elements], 24
     )
     data["dimension"].x = feature_tensor(
-        [_dimension_feature(x, scale_safe, origin) for x in dimension_elements], 15
+        [_dimension_feature(x, scale_safe, origin) for x in dimension_elements], 17
     )
     data["text"].x = feature_tensor(
         [_text_feature(x, scale_safe, origin) for x in text_elements], 41
@@ -532,15 +537,45 @@ def build_semantic_graph(
             str(_get(_get(x, "source"), "layer", "")) for x in items
         ]
 
-    data["geometry"].measured_length = [
-        _safe_float(_get(x, "length"), float("nan")) for x in geometry_elements
+    data["geometry"].entity_type = [
+        str(_get(_get(x, "source"), "entity_type", "OTHER")).upper()
+        for x in geometry_elements
     ]
-    data["geometry"].measured_area = [
-        _safe_float(_get(x, "area"), float("nan")) for x in geometry_elements
+    data["geometry"].geometry_type = [
+        str(_get(x, "geometry_type", "OTHER")).upper()
+        for x in geometry_elements
     ]
-    data["geometry"].radius = [
-        _safe_float(_get(x, "radius"), float("nan")) for x in geometry_elements
-    ]
+    data["geometry"].is_closed = torch.tensor(
+        [bool(_get(x, "is_closed", False)) for x in geometry_elements], dtype=torch.bool
+    )
+    def optional_measurement(item, field):
+        raw = _get(item, field)
+        try:
+            value = float(raw)
+            return value if math.isfinite(value) else 0.0
+        except (TypeError, ValueError, OverflowError):
+            return 0.0
+
+    data["geometry"].measured_length = [optional_measurement(x, "length") for x in geometry_elements]
+    data["geometry"].measured_area = [optional_measurement(x, "area") for x in geometry_elements]
+    # radius is the raw DXF entity radius; analytic radius_measured is separate.
+    data["geometry"].radius = [optional_measurement(x, "radius") for x in geometry_elements]
+    data["geometry"].radius_measured = [optional_measurement(x, "radius_measured") for x in geometry_elements]
+    def valid_source_value(item, field):
+        raw = _get(item, field)
+        try:
+            return raw is not None and math.isfinite(float(raw))
+        except (TypeError, ValueError, OverflowError):
+            return False
+    data["geometry"].measured_length_valid = torch.tensor(
+        [valid_source_value(x, "length") for x in geometry_elements], dtype=torch.bool
+    )
+    data["geometry"].measured_area_valid = torch.tensor(
+        [valid_source_value(x, "area") for x in geometry_elements], dtype=torch.bool
+    )
+    data["geometry"].radius_valid = torch.tensor(
+        [valid_source_value(x, "radius") for x in geometry_elements], dtype=torch.bool
+    )
     data["dimension"].dimension_type = [
         str(_get(x, "dimension_type", "UNKNOWN")) for x in dimension_elements
     ]
@@ -704,6 +739,37 @@ def build_semantic_graph(
                 _add_edge(edge_store, edge_type, i, j, attrs)
                 pair_seen.add((i, j, relation))
 
+            # Candidate geometric constraints. These are evidence edges, not
+            # asserted engineering equalities or symmetry constraints.
+            length_a, length_b = float(ga.length), float(gb.length)
+            if min(length_a, length_b) > 1e-9:
+                length_delta = abs(length_a - length_b) / max(length_a, length_b)
+                if length_delta <= 0.02:
+                    _add_edge(
+                        edge_store, ("geometry", "equal_length_candidate", "geometry"),
+                        i, j, [length_delta, length_a / scale_safe, length_b / scale_safe],
+                    )
+            try:
+                from shapely.affinity import scale as affine_scale
+                ca, cb = ga.centroid, gb.centroid
+                mirror_axis_x = (float(ca.x) + float(cb.x)) * 0.5
+                reflected_b = affine_scale(
+                    gb, xfact=-1.0, yfact=1.0, origin=(mirror_axis_x, 0.0)
+                )
+                mirror_error = float(ga.hausdorff_distance(reflected_b))
+                mirror_tolerance = max(float(spatial_tolerance) * 0.02, 1e-6)
+                if mirror_error <= mirror_tolerance:
+                    _add_edge(
+                        edge_store, ("geometry", "mirror_candidate", "geometry"),
+                        i, j, [
+                            mirror_error / scale_safe,
+                            abs(float(ca.y) - float(cb.y)) / scale_safe,
+                            max(0.0, 1.0 - mirror_error / mirror_tolerance),
+                        ],
+                    )
+            except Exception:
+                pass
+
     # Preserve directed near edges from the original implementation and
     # analytic graph. Deduplicate all same-direction relation records.
     for edge_type, records in list(edge_store.items()):
@@ -711,7 +777,8 @@ def build_semantic_graph(
         for src, dst, attrs in records:
             key = (src, dst)
             previous = dedup.get(key)
-            if previous is None or attrs[-1] > previous[-1]:
+            score_index = 5 if len(attrs) >= 7 else len(attrs) - 1
+            if previous is None or attrs[score_index] > previous[score_index]:
                 dedup[key] = attrs
         edge_store[edge_type] = [
             (src, dst, attrs) for (src, dst), attrs in dedup.items()
@@ -830,27 +897,41 @@ def build_semantic_graph(
     # Add more specific measurement roles based on the two definition points.
     for di, dimension in enumerate(dimension_elements):
         dim_type = str(_get(dimension, "dimension_type", "UNKNOWN")).upper()
-        endpoints = _get(dimension, "endpoints")
-        definition_points = _get(dimension, "definition_points")
+        endpoints = _get(dimension, "endpoints") or []
+        definition_points = _get(dimension, "definition_points") or []
         attachment_points = []
-        measured_points = definition_points or endpoints
-        if measured_points:
-            attachment_points = [
-                ("measures_from", _xy(measured_points[0]), None),
-                ("measures_to", _xy(measured_points[1]), None),
-            ]
-        elif dim_type in {"RADIUS", "DIAMETRIC"}:
+
+        # Special dimension semantics must precede generic measured points.
+        if dim_type in {"RADIUS", "DIAMETRIC"}:
             center = _xy(_get(dimension, "center"))
             measure = _xy(_get(dimension, "measurement_point"))
+            if center is None and len(endpoints) >= 2:
+                center = _xy(endpoints[0])
+            if measure is None and len(endpoints) >= 2:
+                measure = _xy(endpoints[-1])
             if center:
                 attachment_points.append(("measures_from", center, "CENTER"))
             if measure:
                 attachment_points.append(("measures_to", measure, None))
+            elif endpoints:
+                p = _xy(endpoints[-1])
+                if p:
+                    attachment_points.append(("measures_to", p, None))
         elif dim_type in {"ANGULAR", "ANGULAR_3P"}:
-            # Extraction versions may expose optional definition_points.
-            points = _get(dimension, "definition_points") or []
+            points = definition_points or endpoints
             for role, point in zip(("measures_from", "measures_to"), points[:2]):
-                attachment_points.append((role, _xy(point), None))
+                coord = _xy(point)
+                if coord:
+                    attachment_points.append((role, coord, None))
+        else:
+            # Definition points identify measured geometry; endpoints retain
+            # the dimension arrow-line direction as an independent feature.
+            measured_points = definition_points if len(definition_points) >= 2 else endpoints
+            if len(measured_points) >= 2:
+                attachment_points = [
+                    ("measures_from", _xy(measured_points[0]), None),
+                    ("measures_to", _xy(measured_points[1]), None),
+                ]
 
         # Existing describes relation: nearest geometries to dimension
         # endpoints/center, bounded by dimension_tolerance.
@@ -988,6 +1069,38 @@ def build_semantic_graph(
             )
 
     # --------------------------------------------------------------
+    # Text-to-dimension matching candidates (dimension annotation linkage)
+    # --------------------------------------------------------------
+    for ti, text in enumerate(text_elements):
+        query = _get(text, "bound") or _get(text, "bound_moved")
+        if query is None:
+            pos = _xy(_get(text, "position")) or _xy(_get(text, "position_moved"))
+            query = Point(pos) if pos else None
+        if query is None:
+            continue
+        matches = []
+        for di, dimension in enumerate(dimension_elements):
+            endpoints = _get(dimension, "endpoints") or []
+            p1 = _xy(endpoints[0]) if len(endpoints) >= 2 else None
+            p2 = _xy(endpoints[1]) if len(endpoints) >= 2 else None
+            center = _xy(_get(dimension, "center"))
+            try:
+                reference = LineString([p1, p2]) if p1 and p2 else (Point(center) if center else None)
+                if reference is None:
+                    continue
+                distance = float(query.distance(reference))
+            except Exception:
+                continue
+            if distance <= dimension_tolerance:
+                matches.append((distance, di))
+        for distance, di in sorted(matches)[:max_neighbors]:
+            confidence = max(0.0, 1.0 - distance / max(float(dimension_tolerance), 1e-9))
+            _add_edge(
+                edge_store, ("text", "labels", "dimension"), ti, di,
+                [distance / scale_safe, confidence],
+            )
+
+    # --------------------------------------------------------------
     # Dimension-to-dimension relationships
     # --------------------------------------------------------------
     # These are candidate relationships, not ground-truth constraints.
@@ -1093,16 +1206,18 @@ def build_semantic_graph(
     # zero edges in a particular drawing. This is essential when training a
     # single model over separate train/validation/test drawings.
     canonical_edge_dims = {
-        ("geometry", "near", "geometry"): 6,
-        ("geometry", "parallel", "geometry"): 6,
-        ("geometry", "perpendicular", "geometry"): 6,
-        ("geometry", "intersects", "geometry"): 6,
-        ("geometry", "touches", "geometry"): 6,
-        ("geometry", "overlaps", "geometry"): 6,
-        ("geometry", "contains", "geometry"): 6,
-        ("geometry", "within", "geometry"): 6,
-        ("geometry", "connected", "geometry"): 6,
-        ("geometry", "collinear", "geometry"): 6,
+        ("geometry", "near", "geometry"): 7,
+        ("geometry", "parallel", "geometry"): 7,
+        ("geometry", "perpendicular", "geometry"): 7,
+        ("geometry", "intersects", "geometry"): 7,
+        ("geometry", "touches", "geometry"): 7,
+        ("geometry", "overlaps", "geometry"): 7,
+        ("geometry", "contains", "geometry"): 7,
+        ("geometry", "within", "geometry"): 7,
+        ("geometry", "connected", "geometry"): 7,
+        ("geometry", "collinear", "geometry"): 7,
+        ("geometry", "equal_length_candidate", "geometry"): 3,
+        ("geometry", "mirror_candidate", "geometry"): 3,
         ("geometry", "has_anchor", "anchor"): 2,
         ("dimension", "describes", "geometry"): 2,
         ("dimension", "measures_from", "geometry"): 2,
@@ -1110,6 +1225,7 @@ def build_semantic_graph(
         ("dimension", "measures_from", "anchor"): 2,
         ("dimension", "measures_to", "anchor"): 2,
         ("text", "describes", "geometry"): 2,
+        ("text", "labels", "dimension"): 2,
         ("dimension", "near", "dimension"): 5,
         ("dimension", "parallel", "dimension"): 5,
         ("dimension", "same_axis", "dimension"): 5,
@@ -1154,7 +1270,7 @@ def build_semantic_graph(
 
     data.graph_metadata = {
         "graph_type": "dxf_semantic_heterogeneous",
-        "feature_version": 3,
+        "feature_version": 4,
         "origin": origin,
         "scale": float(scale_safe),
         "node_counts": {
@@ -1165,7 +1281,7 @@ def build_semantic_graph(
         },
         "feature_dims": {
             "geometry": 24,
-            "dimension": 15,
+            "dimension": 17,
             "text": 41,
             "anchor": 12,
         },
@@ -1176,6 +1292,7 @@ def build_semantic_graph(
             "normalized_endpoint_distance",
             "overlap_ratio",
             "confidence",
+            "endpoint_distance_valid",
         ],
         "edge_feature_dims": {
             "|".join(edge_type): int(data[edge_type].edge_attr.size(-1))
@@ -1184,7 +1301,11 @@ def build_semantic_graph(
         "measurement_learning": {
             "targets": ["length", "area", "radius"],
             "analytic_length_area_used_as_input": False,
-            "radius_input_feature": True,
+            "radius_input_feature": False,
+            "radius_target_source": "raw_dxf_entity_radius",
+            "radius_measured_is_separate": True,
+            "area_validity": "is_closed",
+            "radius_validity": "entity_type in {CIRCLE, ARC}",
             "target_encoding": "log1p",
         },
         "edge_counts": {

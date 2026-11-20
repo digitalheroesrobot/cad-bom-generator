@@ -121,7 +121,7 @@ def predict_geometry(data, checkpoint_path: str, device: str | None = None):
     model.eval()
     data = data.to(device)
     with torch.no_grad():
-        logits, measurement_log, _ = model(data)
+        logits, measurement_log, _, evidence = model(data)
         if checkpoint.get("class_to_id"):
             probabilities = logits.softmax(dim=-1)
             scores, class_ids = probabilities.max(dim=-1)
@@ -139,7 +139,13 @@ def predict_geometry(data, checkpoint_path: str, device: str | None = None):
     text_contents = getattr(data["text"], "content", [])
     analytic_lengths = getattr(data["geometry"], "measured_length", [])
     analytic_areas = getattr(data["geometry"], "measured_area", [])
-    analytic_radii = getattr(data["geometry"], "radius", [])
+    analytic_radii = getattr(data["geometry"], "radius_measured", [])
+    raw_dxf_radii = getattr(data["geometry"], "radius", [])
+    entity_types = getattr(data["geometry"], "entity_type", ["OTHER"] * len(geometry_handles))
+    closed_flags = getattr(data["geometry"], "is_closed", [False] * len(geometry_handles))
+    length_valid = getattr(data["geometry"], "measured_length_valid", [False] * len(geometry_handles))
+    area_valid = getattr(data["geometry"], "measured_area_valid", [False] * len(geometry_handles))
+    radius_valid = getattr(data["geometry"], "radius_valid", [False] * len(geometry_handles))
 
     predictions = []
     for geometry_index in range(len(class_ids)):
@@ -147,8 +153,19 @@ def predict_geometry(data, checkpoint_path: str, device: str | None = None):
         for relation in ("measures_from", "measures_to", "describes"):
             edge_type = ("dimension", relation, "geometry")
             for dimension_index, attrs in _edge_candidates(data, edge_type, geometry_index):
+                dimension_text_matches = []
+                for text_index, text_attrs in _edge_candidates(
+                    data, ("text", "labels", "dimension"), dimension_index
+                ):
+                    dimension_text_matches.append({
+                        "text_handle": str(text_handles[text_index]),
+                        "content": str(text_contents[text_index]) if text_index < len(text_contents) else "",
+                        "normalized_distance": text_attrs[0] if len(text_attrs) > 0 else None,
+                        "candidate_confidence": text_attrs[1] if len(text_attrs) > 1 else None,
+                    })
                 record = {
                     "dimension_handle": str(dimension_handles[dimension_index]),
+                    "dimension_text_candidates": dimension_text_matches,
                     "relation": relation,
                     "anchor": _dimension_anchor_details(data, dimension_index, relation),
                     "dimension_type": (
@@ -185,9 +202,18 @@ def predict_geometry(data, checkpoint_path: str, device: str | None = None):
         predicted = torch.expm1(
             measurement_log[geometry_index].clamp(min=0.0, max=30.0)
         ).detach().cpu().tolist()
-        predicted_length, predicted_area, predicted_radius = [
-            float(value) for value in predicted
-        ]
+        predicted_length, predicted_area, predicted_radius = [float(value) for value in predicted]
+        entity_type = str(entity_types[geometry_index]).upper()
+        is_closed = bool(closed_flags[geometry_index])
+        area_applicable = is_closed
+        radius_applicable = entity_type in {"CIRCLE", "ARC"}
+        direct_values = torch.expm1(evidence["direct_log"][geometry_index].clamp(0.0, 30.0)).cpu().tolist()
+        relation_values = torch.expm1(evidence["relation_log"][geometry_index].clamp(0.0, 30.0)).cpu().tolist()
+        fusion_weights = evidence["fusion_weight"][geometry_index].cpu().tolist()
+        if not area_applicable:
+            predicted_area = None
+        if not radius_applicable:
+            predicted_radius = None
         predicted_type = id_to_class.get(int(class_ids[geometry_index]), "UNKNOWN")
 
         predictions.append({
@@ -198,9 +224,35 @@ def predict_geometry(data, checkpoint_path: str, device: str | None = None):
             "predicted_length": predicted_length,
             "predicted_area": predicted_area,
             "predicted_radius": predicted_radius,
+            "direct_measurements": {
+                "length": float(direct_values[0]),
+                "area": float(direct_values[1]) if area_applicable else None,
+                "radius": float(direct_values[2]) if radius_applicable else None,
+            },
+            "relation_measurements": {
+                "length": float(relation_values[0]),
+                "area": float(relation_values[1]) if area_applicable else None,
+                "radius": float(relation_values[2]) if radius_applicable else None,
+            },
+            "fusion_weights": {
+                "length": float(fusion_weights[0]),
+                "area": float(fusion_weights[1]),
+                "radius": float(fusion_weights[2]),
+            },
+            "measurement_validity": {
+                "length": True,
+                "area": area_applicable,
+                "radius": radius_applicable,
+            },
+            "entity_type": entity_type,
+            "is_closed": is_closed,
+            "raw_dxf_radius": _optional_float(raw_dxf_radii, geometry_index),
             "analytic_length": _optional_float(analytic_lengths, geometry_index),
             "analytic_area": _optional_float(analytic_areas, geometry_index),
             "analytic_radius": _optional_float(analytic_radii, geometry_index),
+            "raw_radius_valid": bool(radius_valid[geometry_index]) if geometry_index < len(radius_valid) else False,
+            "analytic_length_valid": bool(length_valid[geometry_index]) if geometry_index < len(length_valid) else False,
+            "analytic_area_valid": bool(area_valid[geometry_index]) if geometry_index < len(area_valid) else False,
             # Backward-compatible aliases remain analytic values. New code
             # should use explicit predicted_* / analytic_* field names.
             "length": _optional_float(analytic_lengths, geometry_index),

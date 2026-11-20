@@ -57,7 +57,7 @@ def load_geometry_targets(path: str | Path) -> dict[str, dict[str, float]]:
                 continue
             try:
                 value = float(raw)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 continue
             if math.isfinite(value) and value >= 0.0:
                 values[name] = value
@@ -86,18 +86,34 @@ def attach_labels(data, handle_labels: dict[str, str], class_to_id: dict[str, in
 def attach_geometry_targets(data, targets: dict[str, dict[str, float]]):
     """Attach log1p regression targets with independent per-task masks."""
     handles = data["geometry"].source_handle
+    entity_types = [str(v).upper() for v in getattr(data["geometry"], "entity_type", ["OTHER"] * len(handles))]
+    closed = getattr(data["geometry"], "is_closed", torch.zeros(len(handles), dtype=torch.bool))
     for name in ("length", "area", "radius"):
         values = [0.0] * len(handles)
         mask = [False] * len(handles)
         for index, handle in enumerate(handles):
-            value = targets.get(str(handle), {}).get(name)
-            if value is None:
+            raw_value = targets.get(str(handle), {}).get(name)
+            try:
+                value = float(raw_value)
+            except (TypeError, ValueError, OverflowError):
                 continue
-            values[index] = math.log1p(float(value))
+            if not math.isfinite(value) or value < 0.0:
+                continue
+            # Task-specific semantic validity prevents meaningless zero targets.
+            if name == "area" and not bool(closed[index]):
+                continue
+            if name == "radius" and entity_types[index] not in {"CIRCLE", "ARC"}:
+                continue
+            values[index] = math.log1p(value)
             mask[index] = True
         data["geometry"][f"{name}_y"] = torch.tensor(values, dtype=torch.float)
         data["geometry"][f"{name}_mask"] = torch.tensor(mask, dtype=torch.bool)
     data.graph_metadata["target_encoding"] = "log1p"
+    data.graph_metadata["target_validity"] = {
+        "area": "is_closed == true",
+        "radius": "entity_type in {CIRCLE, ARC}",
+        "length": "finite reviewed target",
+    }
     data.graph_metadata["target_provenance"] = "reviewed_external_ground_truth"
     return data
 
@@ -130,8 +146,8 @@ def build_training_file(
         raise FileNotFoundError(f"Graph file not found: {graph_path}")
 
     data = torch.load(graph_path, map_location="cpu", weights_only=False)
-    if data.graph_metadata.get("feature_version") != 3:
-        raise ValueError("Rebuild the semantic graph with feature_version=3.")
+    if data.graph_metadata.get("feature_version") != 4:
+        raise ValueError("Rebuild the semantic graph with feature_version=4.")
 
     handle_labels = load_handle_labels(labels_path)
     class_to_id = load_class_mapping(classes_path) if classes_path else {}

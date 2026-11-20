@@ -1,237 +1,175 @@
-# DXF semantic GNN: independent measurement inference
+# Relation-aware DXF heterogeneous GNN
 
-This optional subsystem runs beside the existing deterministic DXF engine.
-It does not replace DXF extraction, geometry conversion, the existing analytic
-measurement calculator, rule-based classification, or BOM code.
+This optional AI subsystem runs alongside the deterministic DXF engine. It does
+not replace DXF parsing, geometry conversion, analytical measurement,
+dimension extraction, topology, classification rules, or BOM generation.
 
-## 1. What the model predicts
+## Architecture
 
-The GNN is now a multi-task heterogeneous model with three independent
-measurement outputs and the existing geometry classification output:
+The graph contains four node types:
 
-- geometry class
-- length
-- area
-- radius
+- Geometry
+- Dimension
+- Anchor
+- Text
 
-**The existing analytical `GeometryElement.length` and `.area` are never used
-as model inputs or regression targets.** They remain attached to the graph only
-for reporting and later fusion with the AI predictions.
+The relation-aware model uses relation-specific message functions and
+destination-normalized attention. Incoming messages compete through a
+softmax over all incoming edges for each destination node. Stacked
+heterogeneous message-passing layers support multi-hop paths such as
+Dimension -> Anchor -> Geometry. Separate direct and relation-based
+measurement heads are combined by a learnable confidence/fusion head.
 
-The 24-dimensional geometry input includes a radius descriptor, as requested.
-The supervised radius target is stored separately in `radius_y` and
-`radius_mask`. For a genuinely independent radius evaluation, ground-truth
-radius labels must be reviewed values that are not copied blindly from that
-same input descriptor.
+The output includes geometry classification, positive length/area/radius
+estimates, direct and relation-based estimates, and per-task fusion weights.
 
-Regression targets are encoded as `log1p(value)` during training. Inference
-converts the model output back to the original measurement units.
+## Feature schema (version 4)
 
-## 2. Graph inputs and relationships
-
-Node feature dimensions:
-
-| Node | Features |
+| Node | Feature dimension |
 |---|---:|
 | geometry | 24 |
-| dimension | 15 |
+| dimension | 17 |
 | text | 41 |
 | anchor | 12 |
 
-The geometry feature vector contains position, bounding dimensions, vertex
-count, closed/valid flags, geometry-type encoding, entity-type hash, and the
-permitted radius descriptor. It does **not** contain analytical length or area.
+Geometry features preserve position, bounds, vertex count, is_closed,
+is_valid, geometry-type one-hot, entity-type hash, and a radius-availability
+flag. The raw DXF radius is deliberately excluded from model inputs because
+it is the supervised radius target; this prevents target leakage. Analytical
+length and area are not model inputs.
 
-The graph preserves geometry relations from the current builder, geometry
-anchors, dimension-to-anchor and dimension-to-geometry candidate roles, and
-text-to-geometry candidates. It also adds dimension-to-dimension candidates:
+Dimension features include endpoint-derived direction/span and explicit
+validity flags for displayed and actual dimension values. Definition points
+are used to associate ordinary linear/aligned dimensions with measured
+geometry; endpoints remain an independent source of dimension-line direction.
 
-- `near`
-- `parallel`
-- `same_axis` (parallel with a small axis offset)
-- `chain_candidate` (dimension endpoints close enough to form a possible chain)
+Special dimension semantics are handled before generic linear attachment:
+RADIUS and DIAMETRIC use center/measurement-point semantics, while ANGULAR
+and ANGULAR_3P use their available definition points (or endpoint fallback).
+This prevents special dimensions from being silently consumed by the generic
+measured-point branch.
 
-These are candidate relations, not ground-truth constraints. Each drawing
-contains the same canonical relation schema, including empty edge stores, so
-graphs can be trained together. Edge attributes are consumed by the model's
-relation-specific message functions.
+Geometry-to-geometry edge attributes include a validity indicator for
+endpoint distance. Missing/non-finite values are not treated as trustworthy
+zero measurements; downstream code can distinguish unavailable evidence.
 
-## 3. Model architecture
+## Measurement applicability and provenance
 
-`DXFSemanticGNN` now contains:
+| Task | Validity rule |
+|---|---|
+| Length | Finite reviewed target |
+| Area | Geometry is_closed == true |
+| Radius | DXF entity_type is CIRCLE or ARC |
 
-1. **Heterogeneous Message Passing** — typed messages move between geometry,
-   dimension, anchor, and text nodes. Each relation has its own message
-   function and uses edge attributes.
-2. **Relation Reasoning Layer** — combines the accumulated evidence at each
-   node. In particular, dimension nodes can exchange information with other
-   dimensions and communicate through anchors to geometry nodes.
-3. **Classification Head** — predicts the geometry category.
-4. **Measurement Inference Head** — predicts log-length, log-area, and
-   log-radius for every geometry node.
+The raw DXF `radius` is kept separately as the supervised target and from
+the independently calculated `radius_measured`. A missing value is represented by a numeric placeholder
+plus a validity mask; the placeholder is never interpreted as a valid target.
 
-The model does not read `data["geometry"].measured_length` or
-`data["geometry"].measured_area`. Those fields are kept only as analytical
-outputs for comparison/fusion after inference.
+For training labels, use reviewed ground truth in CSV/JSON keyed by DXF
+`source_handle`. Radius labels should represent the raw CAD radius when that
+is the desired prediction target. Do not copy analytic outputs into labels
+without independent review.
 
-## 4. Build and save semantic graphs
-
-Use the existing pipeline objects:
-
-```python
-from app.services.dxf_engine.ai_gnn import build_semantic_graph
-import torch
-
-semantic_graph = build_semantic_graph(
-    geometry_elements=geometry_elements,
-    dimension_elements=dimension_elements,
-    text_elements=text_elements,
-    raw_entities=raw_entities,
-    spatial_index=spatial_index,
-    scale=scale,
-    spatial_tolerance=300.0,
-    dimension_tolerance=10000.0,
-    text_tolerance=300.0,
-    connection_tolerance=1.0,
-)
-torch.save(semantic_graph, "graphs/drawing_001.pt")
-```
-
-Or request graph export from `analyze_dxf`:
-
-```python
-result = analyze_dxf(
-    dxf_path,
-    ai_graph_output_path="graphs/drawing_001.pt",
-    ai_graph_options={
-        "spatial_tolerance": 300.0,
-        "dimension_tolerance": 10000.0,
-        "text_tolerance": 300.0,
-        "connection_tolerance": 1.0,
-        "angular_tolerance_degrees": 3.0,
-    },
-)
-```
-
-The AI graph is saved separately; the normal analysis result remains
-JSON-serializable and contains an `ai_graph` summary when export is requested.
-
-## 5. Ground-truth label format
-
-Create one reviewed CSV per drawing. `source_handle` must match the original
-DXF entity handle. The file can contain classification and measurement labels:
+Example CSV:
 
 ```csv
 source_handle,label,length,area,radius
 2A1,BEAM,1250.0,,
 2A2,PLATE,,245000.0,
 2A3,CIRCLE,,,25.0
-2A4,PROFILE,850.0,12000.0,
 ```
 
-Leave a measurement blank when it is not applicable or has no trusted
-ground-truth value. Do not fill `length` or `area` from the existing analytic
-engine if the purpose is to train an independent AI estimate. Use reviewed
-engineering values, verified dimensions, or other independent ground truth.
+Leave unavailable or inapplicable targets blank. The label builder masks area
+for open geometry and radius for entities other than CIRCLE/ARC.
 
-Attach labels to each graph:
+## Rebuild graphs and labels
+
+Feature version 4 is incompatible with version 3 graphs and checkpoints.
+Rebuild every graph, regenerate labeled graphs, and retrain before inference.
 
 ```python
-from app.services.dxf_engine.ai_gnn.labels import build_training_file
+from app.services.dxf_engine.ai_gnn import build_semantic_graph
+import torch
 
-build_training_file(
-    graph_path="graphs/drawing_001.pt",
-    labels_path="labels/drawing_001.csv",
-    classes_path="classes.json",  # optional; may be None for regression-only
-    output_path="labeled/drawing_001.pt",
+graph = build_semantic_graph(
+    geometry_elements=geometry_elements,
+    dimension_elements=dimension_elements,
+    text_elements=text_elements,
+    raw_entities=raw_entities,
+    analytic_graph=analytic_graph,
+    spatial_index=spatial_index,
+    scale=scale,
+    spatial_tolerance=300.0,
+    dimension_tolerance=2000.0,
+    text_tolerance=300.0,
 )
+torch.save(graph, "graphs/drawing_001_v4.pt")
 ```
 
-```python
-python app/services/dxf_engine/ai_gnn/labels.py --graph storage/training_graphs/drawing_001.pt --labels storage/labels/labels_001.csv --classes storage/classes.json --output storage/training_graphs/train_001.pt
-```
-
-`classes.json` example:
-
-```json
-{
-  "BEAM": 0,
-  "COLUMN": 1,
-  "PLATE": 2,
-  "BOLT": 3,
-  "OTHER": 4
-}
-```
-
-The resulting graph stores:
-- `geometry.y` and `geometry.class_mask`
-- `geometry.length_y` and `geometry.length_mask`
-- `geometry.area_y` and `geometry.area_mask`
-- `geometry.radius_y` and `geometry.radius_mask`
-
-Regression targets are `log1p` encoded. Missing labels are masked and do not
-contribute to the loss.
-
-## 6. Train, validation, and test separately
-
-Split by complete drawings or projects, never by individual geometry nodes
-from the same drawing. This avoids leakage between related entities from one
-drawing. Use disjoint graph files for the three splits.
-
-Example:
+Attach labels:
 
 ```bash
-python -m app.services.dxf_engine.ai_gnn.train --train-graphs storage/training_graphs/train_001.pt storage/training_graphs/train_002.pt storage/training_graphs/train_003.pt --val-graphs storage/training_graphs/validation_001.pt --test-graphs storage/training_graphs/test_001.pt --classes storage/classes.json --output storage/models/dxf_semantic_gnn_multitask.pt --epochs 200 --patience 25
+python -m app.services.dxf_engine.ai_gnn.labels \
+  --graph graphs/drawing_001_v4.pt \
+  --labels labels/drawing_001.csv \
+  --classes classes.json \
+  --output labeled/drawing_001_v4.pt
 ```
 
-The training loop:
-- optimizes classification and available measurement regression losses;
-- evaluates the validation set every epoch;
-- saves the checkpoint with the best validation loss;
-- stops early when validation loss does not improve;
-- evaluates the test set only after checkpoint selection.
+## Train / validation / test
 
-Reported regression metrics are MAE in original drawing units for length,
-area, and radius. Classification accuracy is reported when class labels exist.
-Every split must contain at least one supervised target. The training script
-checks that graph files do not overlap across splits and that their feature
-and relation schemas match.
+Split by complete drawings or projects, never by geometry rows from the same
+drawing. Keep all split graph files disjoint.
 
-## 7. Inference and later fusion
+```bash
+python -m app.services.dxf_engine.ai_gnn.train \
+  --train-graphs labeled/train_001_v4.pt labeled/train_002_v4.pt \
+  --val-graphs labeled/validation_001_v4.pt \
+  --test-graphs labeled/test_001_v4.pt \
+  --classes classes.json \
+  --output models/dxf_relation_aware_gnn_v4.pt \
+  --epochs 200 --patience 25
+```
+
+The loss supervises the fused estimate and applies smaller auxiliary losses
+to the direct and relation-based heads. Checkpoint selection uses validation
+loss; the test split is evaluated only after selection.
+
+## Inference
 
 ```python
 from app.services.dxf_engine.ai_gnn.inference import predict_geometry
 
 predictions = predict_geometry(
-    semantic_graph,
-    "models/dxf_semantic_gnn_multitask.pt",
+    graph,
+    "models/dxf_relation_aware_gnn_v4.pt",
 )
 ```
 
-Each geometry prediction contains separate fields:
+Each prediction exposes:
 
-- `predicted_length`, `predicted_area`, `predicted_radius`: GNN outputs
-- `analytic_length`, `analytic_area`, `analytic_radius`: existing engine values
-- `dimension_candidates`: candidate dimensions and anchor references
-- `related_dimensions`: dimension-to-dimension candidate relationships
-- `text_candidates`: nearby text candidates
+- `predicted_length`, `predicted_area`, `predicted_radius`
+- `direct_measurements` and `relation_measurements`
+- `fusion_weights` (weight assigned to the direct branch)
+- `measurement_validity`
+- `raw_dxf_radius` and `analytic_radius`
+- associated dimension, anchor, and text candidates
 
-For backward compatibility, `length` and `area` still alias the analytic
-values. New fusion code should use the explicit `predicted_*` and `analytic_*`
-names. No fusion algorithm is imposed here: it should be designed and
-validated separately using confidence, residuals, and engineering constraints.
+Area and radius are returned as `None` when the geometry is not eligible.
+Candidate relations remain evidence, not verified engineering constraints.
 
-## 8. Important limitations
+## Engineering limitations and next validation
 
-- The model predicts measurements only to the extent that training labels
-  represent reliable ground truth and cover the drawing distribution.
-- Dimension association edges are geometric candidates. The model can learn
-  from their context, but the current implementation does not have a separate
-  supervised dimension-link classification head.
-- Angular, ordinate, radial, and diametric dimensions may need more precise
-  DXF definition-point extraction and curated examples for reliable constraint
-  interpretation.
-- The GNN's regression output is an estimate, not a replacement for dimension
-  verification or engineering review.
-- Feature version 3 is incompatible with older graph files/checkpoints.
-  Rebuild semantic graphs, attach labels again, and retrain.
+The present relation matcher uses edge-conditioned attention to score and
+aggregate candidate relationships. It is not yet a separately supervised
+dimension-to-geometry correspondence classifier. Equal-length and mirrored
+shape edges are geometric candidates, not hard constraints. Part-to-whole
+sums, area composition, and exact Pythagorean equations are not yet solved
+as explicit constraint systems; add these only with independently validated
+evidence and provenance. Fusion weights are learned weights, not calibrated
+probabilities.
+
+Before production BOM use, evaluate by held-out drawings from different
+projects, units, CAD conventions, and dimension styles. Report per-task MAE,
+coverage, applicability-mask counts, calibration, and dimension-link
+precision/recall. A plausible prediction alone is not proof of correctness.
