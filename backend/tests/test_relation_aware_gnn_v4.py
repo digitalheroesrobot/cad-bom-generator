@@ -10,9 +10,20 @@ from app.services.dxf_engine.ai_gnn.graph_builder import (
 from app.services.dxf_engine.ai_gnn.labels import attach_geometry_targets
 
 
+class _NodeStore(dict):
+    def __getattr__(self, name):
+        try:
+            return self[name]
+        except KeyError as exc:
+            raise AttributeError(name) from exc
+
+    def __setattr__(self, name, value):
+        self[name] = value
+
+
 class _Graph:
     def __init__(self, geometry):
-        self.geometry = geometry
+        self.geometry = _NodeStore(geometry)
         self.graph_metadata = {}
 
     def __getitem__(self, key):
