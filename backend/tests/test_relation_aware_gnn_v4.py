@@ -1,0 +1,93 @@
+import math
+
+import torch
+from shapely.geometry import LineString, Point
+
+from app.services.dxf_engine.ai_gnn.graph_builder import (
+    _geometry_feature,
+    _dimension_feature,
+)
+from app.services.dxf_engine.ai_gnn.labels import attach_geometry_targets
+
+
+class _Graph:
+    def __init__(self, geometry):
+        self.geometry = geometry
+        self.graph_metadata = {}
+
+    def __getitem__(self, key):
+        if key == "geometry":
+            return self.geometry
+        raise KeyError(key)
+
+
+def test_geometry_and_dimension_feature_contract_v4():
+    linear = {
+        "geometry_2d": LineString([(0, 0), (10, 0)]),
+        "geometry_type": "LINEAR_GEOMETRY",
+        "source": {"entity_type": "LINE"},
+        "is_closed": False,
+        "is_valid": True,
+        "radius": None,
+    }
+    circle = {
+        "geometry_2d": Point(5, 5).buffer(3),
+        "geometry_type": "CLOSED_PROFILE",
+        "source": {"entity_type": "CIRCLE"},
+        "is_closed": True,
+        "is_valid": True,
+        "radius": 3.0,
+    }
+    assert len(_geometry_feature(linear, 1.0, (0.0, 0.0))) == 25
+    assert len(_geometry_feature(circle, 1.0, (0.0, 0.0))) == 25
+
+    dimension = {
+        "endpoints": [(0, 0), (0, 20)],
+        "definition_points": [(2, 0), (2, 20)],
+        "dimension_type": "LINEAR",
+        "length": 20.0,
+        "actual_length": None,
+    }
+    features = _dimension_feature(dimension, 1.0, (0.0, 0.0))
+    assert len(features) == 17
+    assert features[-2:] == [1.0, 0.0]
+    # Endpoints, not definition-point displacement, define the arrow-line direction.
+    assert features[5] == 0.0
+    assert features[6] == 20.0
+
+
+def test_label_masks_follow_geometry_semantics_and_preserve_real_zero():
+    geometry = {
+        "source_handle": ["L1", "P1", "C1", "A1"],
+        "entity_type": ["LINE", "LWPOLYLINE", "CIRCLE", "ARC"],
+        "is_closed": torch.tensor([False, True, True, False]),
+    }
+    graph = _Graph(geometry)
+    targets = {
+        "L1": {"length": 0.0, "area": 5.0, "radius": 2.0},
+        "P1": {"length": 10.0, "area": 0.0, "radius": 3.0},
+        "C1": {"length": 18.0, "area": 28.0, "radius": 0.0},
+        "A1": {"length": 4.0, "area": 8.0, "radius": 2.0},
+    }
+    attach_geometry_targets(graph, targets)
+    assert graph.geometry["length_mask"].tolist() == [True, True, True, True]
+    assert graph.geometry["area_mask"].tolist() == [False, True, True, False]
+    assert graph.geometry["radius_mask"].tolist() == [False, False, True, True]
+    # A true zero remains a valid target and is encoded as log1p(0) == 0.
+    assert graph.geometry["length_mask"][0]
+    assert graph.geometry["length_y"][0].item() == 0.0
+    assert graph.geometry["radius_mask"][2]
+    assert graph.geometry["radius_y"][2].item() == 0.0
+
+
+def test_non_finite_measurement_labels_are_ignored():
+    geometry = {
+        "source_handle": ["C1"],
+        "entity_type": ["CIRCLE"],
+        "is_closed": torch.tensor([True]),
+    }
+    graph = _Graph(geometry)
+    attach_geometry_targets(graph, {"C1": {"length": float("nan"), "area": float("inf"), "radius": 5.0}})
+    assert not graph.geometry["length_mask"][0]
+    assert not graph.geometry["area_mask"][0]
+    assert graph.geometry["radius_mask"][0]
