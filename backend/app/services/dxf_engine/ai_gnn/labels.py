@@ -57,7 +57,7 @@ def load_geometry_targets(path: str | Path) -> dict[str, dict[str, float]]:
                 continue
             try:
                 value = float(raw)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 continue
             if math.isfinite(value) and value >= 0.0:
                 values[name] = value
@@ -92,15 +92,19 @@ def attach_geometry_targets(data, targets: dict[str, dict[str, float]]):
         values = [0.0] * len(handles)
         mask = [False] * len(handles)
         for index, handle in enumerate(handles):
-            value = targets.get(str(handle), {}).get(name)
-            if value is None or not math.isfinite(float(value)) or float(value) < 0.0:
+            raw_value = targets.get(str(handle), {}).get(name)
+            try:
+                value = float(raw_value)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if not math.isfinite(value) or value < 0.0:
                 continue
             # Task-specific semantic validity prevents meaningless zero targets.
             if name == "area" and not bool(closed[index]):
                 continue
             if name == "radius" and entity_types[index] not in {"CIRCLE", "ARC"}:
                 continue
-            values[index] = math.log1p(float(value))
+            values[index] = math.log1p(value)
             mask[index] = True
         data["geometry"][f"{name}_y"] = torch.tensor(values, dtype=torch.float)
         data["geometry"][f"{name}_mask"] = torch.tensor(mask, dtype=torch.bool)
