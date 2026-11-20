@@ -8,6 +8,8 @@ from app.services.dxf_engine.ai_gnn.graph_builder import (
     _dimension_feature,
 )
 from app.services.dxf_engine.ai_gnn.labels import attach_geometry_targets
+from app.services.dxf_engine.ai_gnn.model import DXFSemanticGNN
+from torch_geometric.data import HeteroData
 
 
 class _NodeStore(dict):
@@ -102,3 +104,46 @@ def test_non_finite_measurement_labels_are_ignored():
     assert not graph.geometry["length_mask"][0]
     assert not graph.geometry["area_mask"][0]
     assert graph.geometry["radius_mask"][0]
+
+
+
+def test_relation_aware_model_outputs_positive_hybrid_measurements():
+    data = HeteroData()
+    data["geometry"].x = torch.randn(2, 25)
+    data["dimension"].x = torch.randn(1, 17)
+    data["anchor"].x = torch.randn(1, 12)
+    data["text"].x = torch.randn(1, 41)
+
+    edge_dims = {}
+    relations = [
+        (("dimension", "measures_from", "anchor"), 2, [[0], [0]]),
+        (("anchor", "rev_measures_from", "dimension"), 2, [[0], [0]]),
+        (("dimension", "describes", "geometry"), 2, [[0], [0]]),
+        (("text", "labels", "dimension"), 2, [[0], [0]]),
+        (("geometry", "equal_length_candidate", "geometry"), 3, [[0], [1]]),
+    ]
+    for edge_type, width, indices in relations:
+        data[edge_type].edge_index = torch.tensor(indices, dtype=torch.long)
+        data[edge_type].edge_attr = torch.randn(1, width)
+        edge_dims["|".join(edge_type)] = width
+
+    model = DXFSemanticGNN(
+        metadata=data.metadata(),
+        input_dims={"geometry": 25, "dimension": 17, "anchor": 12, "text": 41},
+        edge_dims=edge_dims,
+        hidden_channels=32,
+        num_classes=4,
+        num_layers=2,
+        dropout=0.0,
+    )
+    model.eval()
+    with torch.no_grad():
+        logits, fused_log, embeddings, evidence = model(data)
+
+    assert logits.shape == (2, 4)
+    assert fused_log.shape == (2, 3)
+    assert embeddings["geometry"].shape == (2, 32)
+    assert torch.all(evidence["direct_raw"] >= 0)
+    assert torch.all(evidence["relation_raw"] >= 0)
+    assert torch.all(evidence["fused_raw"] >= 0)
+    assert torch.all((evidence["fusion_weight"] >= 0) & (evidence["fusion_weight"] <= 1))
