@@ -91,7 +91,7 @@ def _line_parts(geometry):
 
 
 def _geometry_feature(element, scale: float, origin):
-    """Build 25 geometry inputs; length and area are intentionally excluded.
+    """Build 24 geometry inputs; length and area are intentionally excluded.
 
     Radius is retained as the explicitly permitted geometric descriptor.
     Ground-truth radius targets are stored separately and never copied from
@@ -125,17 +125,17 @@ def _geometry_feature(element, scale: float, origin):
     entity_hash[_hash_bucket(entity_type, 8)] = 1.0
 
     # Existing analytical length and area are deliberately NOT features.
-    # Radius is an allowed shape descriptor; the supervised radius target is
-    # separately supplied in geometry.radius_y with its own mask.
-    radius = _safe_float(_get(element, "radius"), 0.0) / scale
-    radius_valid = _get(element, "radius") is not None and math.isfinite(_safe_float(_get(element, "radius"), float("nan")))
+    # Do not feed the raw DXF radius value into the model: it is the desired
+    # supervised target and would leak the answer. Keep only availability.
+    radius_raw = _get(element, "radius")
+    radius_valid = radius_raw is not None and math.isfinite(_safe_float(radius_raw, float("nan")))
     return [
         (cx - ox) / scale, (cy - oy) / scale,
         width / scale, height / scale,
         math.log1p(max(0.0, vertex_count)),
         float(bool(_get(element, "is_closed", False))),
         float(bool(_get(element, "is_valid", True))),
-        *type_vector, *entity_hash, radius, float(radius_valid),
+        *type_vector, *entity_hash, float(radius_valid),
     ]
 
 
@@ -513,7 +513,7 @@ def build_semantic_graph(
         return torch.tensor(rows, dtype=torch.float).reshape(len(rows), width)
 
     data["geometry"].x = feature_tensor(
-        [_geometry_feature(x, scale_safe, origin) for x in geometry_elements], 25
+        [_geometry_feature(x, scale_safe, origin) for x in geometry_elements], 24
     )
     data["dimension"].x = feature_tensor(
         [_dimension_feature(x, scale_safe, origin) for x in dimension_elements], 17
@@ -1280,7 +1280,7 @@ def build_semantic_graph(
             "anchor": len(anchor_rows),
         },
         "feature_dims": {
-            "geometry": 25,
+            "geometry": 24,
             "dimension": 17,
             "text": 41,
             "anchor": 12,
@@ -1301,8 +1301,8 @@ def build_semantic_graph(
         "measurement_learning": {
             "targets": ["length", "area", "radius"],
             "analytic_length_area_used_as_input": False,
-            "radius_input_feature": True,
-            "radius_source": "raw_dxf_entity_radius",
+            "radius_input_feature": False,
+            "radius_target_source": "raw_dxf_entity_radius",
             "radius_measured_is_separate": True,
             "area_validity": "is_closed",
             "radius_validity": "entity_type in {CIRCLE, ARC}",
