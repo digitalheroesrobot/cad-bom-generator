@@ -27,14 +27,16 @@ estimates, direct and relation-based estimates, and per-task fusion weights.
 
 | Node | Feature dimension |
 |---|---:|
-| geometry | 25 |
+| geometry | 24 |
 | dimension | 17 |
 | text | 41 |
 | anchor | 12 |
 
 Geometry features preserve position, bounds, vertex count, is_closed,
-is_valid, geometry-type one-hot, entity-type hash, raw DXF radius, and
-radius-validity. Analytical length and area are not model inputs.
+is_valid, geometry-type one-hot, entity-type hash, and a radius-availability
+flag. The raw DXF radius is deliberately excluded from model inputs because
+it is the supervised radius target; this prevents target leakage. Analytical
+length and area are not model inputs.
 
 Dimension features include endpoint-derived direction/span and explicit
 validity flags for displayed and actual dimension values. Definition points
@@ -59,8 +61,8 @@ zero measurements; downstream code can distinguish unavailable evidence.
 | Area | Geometry is_closed == true |
 | Radius | DXF entity_type is CIRCLE or ARC |
 
-The raw DXF `radius` is kept separately from the independently calculated
-`radius_measured`. A missing value is represented by a numeric placeholder
+The raw DXF `radius` is kept separately as the supervised target and from
+the independently calculated `radius_measured`. A missing value is represented by a numeric placeholder
 plus a validity mask; the placeholder is never interpreted as a valid target.
 
 For training labels, use reviewed ground truth in CSV/JSON keyed by DXF
