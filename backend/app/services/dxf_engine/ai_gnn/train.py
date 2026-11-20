@@ -29,9 +29,9 @@ def _load_graphs(paths):
     graphs = []
     for path in paths:
         data = torch.load(path, map_location="cpu", weights_only=False)
-        if data.graph_metadata.get("feature_version") != 3:
+        if data.graph_metadata.get("feature_version") != 4:
             raise ValueError(
-                f"{path}: expected semantic graph feature_version=3; rebuild this graph."
+                f"{path}: expected semantic graph feature_version=4; rebuild this graph."
             )
         graphs.append((str(path), data))
     return graphs
@@ -69,7 +69,7 @@ def _split_tasks(graphs):
     return tasks
 
 
-def _loss_for_graph(logits, measurement_log, data, class_weight=1.0,
+def _loss_for_graph(logits, measurement_log, evidence, data, class_weight=1.0,
                     regression_weights=None):
     regression_weights = regression_weights or {
         "length": 1.0, "area": 1.0, "radius": 0.5
@@ -91,8 +91,13 @@ def _loss_for_graph(logits, measurement_log, data, class_weight=1.0,
             continue
         prediction = measurement_log[mask, column]
         task_loss = F.smooth_l1_loss(prediction, target[mask])
-        losses.append(float(regression_weights.get(name, 1.0)) * task_loss)
+        direct_loss = F.smooth_l1_loss(evidence["direct_log"][mask, column], target[mask])
+        relation_loss = F.smooth_l1_loss(evidence["relation_log"][mask, column], target[mask])
+        weight = float(regression_weights.get(name, 1.0))
+        losses.append(weight * (task_loss + 0.15 * direct_loss + 0.15 * relation_loss))
         details[name] = task_loss.detach()
+        details[f"{name}_direct_aux"] = direct_loss.detach()
+        details[f"{name}_relation_aux"] = relation_loss.detach()
 
     if not losses:
         raise ValueError("Graph contains no supervised classification or measurement targets.")
@@ -109,9 +114,9 @@ def _evaluate(model, graphs, device, class_weight, regression_weights):
 
     for _, cpu_data in graphs:
         data = cpu_data.to(device)
-        logits, measurement_log, _ = model(data)
+        logits, measurement_log, _, evidence = model(data)
         loss, _ = _loss_for_graph(
-            logits, measurement_log, data,
+            logits, measurement_log, evidence, data,
             class_weight=class_weight,
             regression_weights=regression_weights,
         )
@@ -262,9 +267,9 @@ def train_model(
         for _, cpu_data in train_graphs:
             data = cpu_data.to(device)
             optimizer.zero_grad(set_to_none=True)
-            logits, measurement_log, _ = model(data)
+            logits, measurement_log, _, evidence = model(data)
             loss, _ = _loss_for_graph(
-                logits, measurement_log, data,
+                logits, measurement_log, evidence, data,
                 class_weight=class_weight,
                 regression_weights=regression_weights,
             )
@@ -320,7 +325,8 @@ def train_model(
         "hidden_channels": hidden_channels,
         "num_layers": num_layers,
         "dropout": dropout,
-        "feature_version": 3,
+        "feature_version": 4,
+        "architecture": "relation_aware_hybrid_v1",
         "target_encoding": "log1p",
         "regression_targets": list(REGRESSION_TARGETS),
         "best_validation_loss": best_validation_loss,
