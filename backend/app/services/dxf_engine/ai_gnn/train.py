@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
+import os
+import random
 from pathlib import Path
 
 import torch
@@ -156,6 +157,159 @@ def _evaluate(model, graphs, device, class_weight, regression_weights):
     return metrics
 
 
+
+def _cpu_state_dict(module):
+    return {
+        key: value.detach().cpu().clone()
+        for key, value in module.state_dict().items()
+    }
+
+
+def _save_training_checkpoint(
+    checkpoint_dir,
+    epoch,
+    model,
+    optimizer,
+    best_validation_loss,
+    best_state,
+    epochs_without_improvement,
+    class_to_id,
+    input_dims,
+    edge_dims,
+    hidden_channels,
+    num_layers,
+    dropout,
+    train_graph_paths,
+    validation_graph_paths,
+    test_graph_paths,
+):
+    """Atomically save a resumable training snapshot and retain numbered copies."""
+    checkpoint_dir = Path(checkpoint_dir)
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    checkpoint = {
+        "checkpoint_version": 1,
+        "epoch": int(epoch),
+        "model_state_dict": _cpu_state_dict(model),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "best_validation_loss": float(best_validation_loss),
+        "best_model_state_dict": best_state,
+        "epochs_without_improvement": int(epochs_without_improvement),
+        "class_to_id": class_to_id,
+        "input_dims": input_dims,
+        "edge_dims": edge_dims,
+        "hidden_channels": hidden_channels,
+        "num_layers": num_layers,
+        "dropout": dropout,
+        "feature_version": 4,
+        "architecture": "relation_aware_hybrid_v1",
+        "target_encoding": "log1p",
+        "regression_targets": list(REGRESSION_TARGETS),
+        "split": {
+            "train_graphs": list(train_graph_paths),
+            "validation_graphs": list(validation_graph_paths),
+            "test_graphs": list(test_graph_paths),
+        },
+        "rng_state": {
+            "python": random.getstate(),
+            "torch": torch.get_rng_state(),
+            "cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+        },
+    }
+
+    latest_path = checkpoint_dir / "checkpoint_latest.pt"
+    latest_tmp = checkpoint_dir / "checkpoint_latest.pt.tmp"
+    torch.save(checkpoint, latest_tmp)
+    os.replace(latest_tmp, latest_path)
+
+    numbered_path = checkpoint_dir / f"checkpoint_epoch_{epoch:04d}.pt"
+    numbered_tmp = checkpoint_dir / f"checkpoint_epoch_{epoch:04d}.pt.tmp"
+    torch.save(checkpoint, numbered_tmp)
+    os.replace(numbered_tmp, numbered_path)
+
+    print(f"[CHECKPOINT SAVED] {numbered_path}")
+    print(f"[LATEST CHECKPOINT] {latest_path}")
+
+
+def _restore_training_checkpoint(
+    checkpoint_path,
+    model,
+    optimizer,
+    device,
+    class_to_id,
+    input_dims,
+    edge_dims,
+    hidden_channels,
+    num_layers,
+    dropout,
+    train_graph_paths,
+    validation_graph_paths,
+    test_graph_paths,
+):
+    """Restore model, optimizer, early-stopping state, and RNG state."""
+    checkpoint = torch.load(
+        checkpoint_path, map_location=device, weights_only=False
+    )
+
+    expected = {
+        "feature_version": 4,
+        "architecture": "relation_aware_hybrid_v1",
+        "input_dims": input_dims,
+        "edge_dims": edge_dims,
+        "hidden_channels": hidden_channels,
+        "num_layers": num_layers,
+        "dropout": dropout,
+        "class_to_id": class_to_id,
+        "split": {
+            "train_graphs": list(train_graph_paths),
+            "validation_graphs": list(validation_graph_paths),
+            "test_graphs": list(test_graph_paths),
+        },
+    }
+    for key, value in expected.items():
+        if checkpoint.get(key) != value:
+            raise ValueError(
+                f"Resume checkpoint mismatch for '{key}'. "
+                "Use the same model configuration, class mapping, and graph splits."
+            )
+
+    if "optimizer_state_dict" not in checkpoint:
+        raise ValueError(
+            "This file is not a resumable training checkpoint "
+            "(optimizer_state_dict is missing)."
+        )
+
+    model.load_state_dict(checkpoint["model_state_dict"])
+    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+
+    rng_state = checkpoint.get("rng_state", {})
+    if rng_state.get("python") is not None:
+        random.setstate(rng_state["python"])
+    if rng_state.get("torch") is not None:
+        torch.set_rng_state(rng_state["torch"].cpu())
+    cuda_rng = rng_state.get("cuda")
+    if cuda_rng is not None and torch.cuda.is_available():
+        try:
+            torch.cuda.set_rng_state_all(cuda_rng)
+        except (RuntimeError, ValueError):
+            print("[WARN] Could not restore CUDA RNG state; continuing.")
+
+    best_state = checkpoint.get("best_model_state_dict")
+    if best_state is None:
+        raise ValueError("Resume checkpoint does not contain best-model weights.")
+
+    print(
+        f"[RESUME] Restored epoch {checkpoint['epoch']} from {checkpoint_path}; "
+        f"best validation loss={checkpoint['best_validation_loss']:.6f}"
+    )
+    return (
+        int(checkpoint["epoch"]),
+        float(checkpoint["best_validation_loss"]),
+        best_state,
+        int(checkpoint.get("epochs_without_improvement", 0)),
+    )
+
+
 def train_model(
     train_graph_paths,
     validation_graph_paths,
@@ -171,12 +325,16 @@ def train_model(
     device: str | None = None,
     class_weight: float = 1.0,
     regression_weights: dict[str, float] | None = None,
+    checkpoint_every: int = 100,
+    resume_from: str | None = None,
 ):
     """Train on drawing-level train graphs, select by validation, test once.
 
     Split by complete drawing/project, never by geometry nodes from the same
     drawing. The test set is not used for optimization or checkpoint selection.
     """
+    if checkpoint_every < 1:
+        raise ValueError("checkpoint_every must be >= 1.")
     if not train_graph_paths or not validation_graph_paths or not test_graph_paths:
         raise ValueError(
             "Provide separate non-empty train, validation, and test graph lists."
@@ -260,8 +418,38 @@ def train_model(
     best_validation_loss = float("inf")
     best_state = None
     epochs_without_improvement = 0
+    start_epoch = 0
 
-    for epoch in range(1, epochs + 1):
+    if resume_from:
+        (
+            start_epoch,
+            best_validation_loss,
+            best_state,
+            epochs_without_improvement,
+        ) = _restore_training_checkpoint(
+            checkpoint_path=resume_from,
+            model=model,
+            optimizer=optimizer,
+            device=device,
+            class_to_id=class_to_id,
+            input_dims=input_dims,
+            edge_dims=edge_dims,
+            hidden_channels=hidden_channels,
+            num_layers=num_layers,
+            dropout=dropout,
+            train_graph_paths=[p for p, _ in train_graphs],
+            validation_graph_paths=[p for p, _ in validation_graphs],
+            test_graph_paths=[p for p, _ in test_graphs],
+        )
+        if start_epoch >= epochs:
+            print(
+                f"[RESUME] Checkpoint is already at epoch {start_epoch}; "
+                f"requested total epochs={epochs}. No additional epochs will run."
+            )
+
+    checkpoint_dir = Path(output_path).parent / "checkpoints"
+
+    for epoch in range(start_epoch + 1, epochs + 1):
         model.train()
         epoch_losses = []
         for _, cpu_data in train_graphs:
@@ -301,9 +489,50 @@ def train_model(
                 f"val_area_MAE={validation_metrics['area_mae']} "
                 f"val_radius_MAE={validation_metrics['radius_mae']}"
             )
+        if epoch % checkpoint_every == 0:
+            _save_training_checkpoint(
+                checkpoint_dir=checkpoint_dir,
+                epoch=epoch,
+                model=model,
+                optimizer=optimizer,
+                best_validation_loss=best_validation_loss,
+                best_state=best_state,
+                epochs_without_improvement=epochs_without_improvement,
+                class_to_id=class_to_id,
+                input_dims=input_dims,
+                edge_dims=edge_dims,
+                hidden_channels=hidden_channels,
+                num_layers=num_layers,
+                dropout=dropout,
+                train_graph_paths=[p for p, _ in train_graphs],
+                validation_graph_paths=[p for p, _ in validation_graphs],
+                test_graph_paths=[p for p, _ in test_graphs],
+            )
+
         if epochs_without_improvement >= patience:
             print(f"Early stopping at epoch {epoch}; best val loss={best_validation_loss:.5f}")
             break
+
+    final_epoch = epoch if epochs > start_epoch else start_epoch
+    if final_epoch > 0 and final_epoch % checkpoint_every != 0:
+        _save_training_checkpoint(
+            checkpoint_dir=checkpoint_dir,
+            epoch=final_epoch,
+            model=model,
+            optimizer=optimizer,
+            best_validation_loss=best_validation_loss,
+            best_state=best_state,
+            epochs_without_improvement=epochs_without_improvement,
+            class_to_id=class_to_id,
+            input_dims=input_dims,
+            edge_dims=edge_dims,
+            hidden_channels=hidden_channels,
+            num_layers=num_layers,
+            dropout=dropout,
+            train_graph_paths=[p for p, _ in train_graphs],
+            validation_graph_paths=[p for p, _ in validation_graphs],
+            test_graph_paths=[p for p, _ in test_graphs],
+        )
 
     if best_state is None:
         raise RuntimeError("Training did not produce a valid checkpoint.")
@@ -359,6 +588,12 @@ def main():
     parser.add_argument("--hidden-channels", type=int, default=96)
     parser.add_argument("--num-layers", type=int, default=2)
     parser.add_argument("--dropout", type=float, default=0.20)
+    parser.add_argument("--checkpoint-every", type=int, default=100)
+    parser.add_argument(
+        "--resume-from",
+        default=None,
+        help="Resume from checkpoint_latest.pt or a numbered training checkpoint.",
+    )
     args = parser.parse_args()
     classes = (
         json.loads(Path(args.classes).read_text(encoding="utf-8"))
@@ -376,6 +611,8 @@ def main():
         hidden_channels=args.hidden_channels,
         num_layers=args.num_layers,
         dropout=args.dropout,
+        checkpoint_every=args.checkpoint_every,
+        resume_from=args.resume_from,
     )
 
 
