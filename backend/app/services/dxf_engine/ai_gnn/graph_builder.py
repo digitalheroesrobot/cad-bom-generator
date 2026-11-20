@@ -47,7 +47,7 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
     try:
         value = float(value)
         return value if math.isfinite(value) else default
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
 
 
@@ -58,7 +58,7 @@ def _xy(point):
         return float(point.x), float(point.y)
     try:
         return float(point[0]), float(point[1])
-    except (TypeError, ValueError, IndexError):
+    except (TypeError, ValueError, IndexError, OverflowError):
         return None
 
 
@@ -553,7 +553,7 @@ def build_semantic_graph(
         try:
             value = float(raw)
             return value if math.isfinite(value) else 0.0
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return 0.0
 
     data["geometry"].measured_length = [optional_measurement(x, "length") for x in geometry_elements]
@@ -565,7 +565,7 @@ def build_semantic_graph(
         raw = _get(item, field)
         try:
             return raw is not None and math.isfinite(float(raw))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return False
     data["geometry"].measured_length_valid = torch.tensor(
         [valid_source_value(x, "length") for x in geometry_elements], dtype=torch.bool
