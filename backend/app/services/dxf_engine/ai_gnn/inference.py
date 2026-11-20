@@ -153,8 +153,19 @@ def predict_geometry(data, checkpoint_path: str, device: str | None = None):
         for relation in ("measures_from", "measures_to", "describes"):
             edge_type = ("dimension", relation, "geometry")
             for dimension_index, attrs in _edge_candidates(data, edge_type, geometry_index):
+                dimension_text_matches = []
+                for text_index, text_attrs in _edge_candidates(
+                    data, ("text", "labels", "dimension"), dimension_index
+                ):
+                    dimension_text_matches.append({
+                        "text_handle": str(text_handles[text_index]),
+                        "content": str(text_contents[text_index]) if text_index < len(text_contents) else "",
+                        "normalized_distance": text_attrs[0] if len(text_attrs) > 0 else None,
+                        "candidate_confidence": text_attrs[1] if len(text_attrs) > 1 else None,
+                    })
                 record = {
                     "dimension_handle": str(dimension_handles[dimension_index]),
+                    "dimension_text_candidates": dimension_text_matches,
                     "relation": relation,
                     "anchor": _dimension_anchor_details(data, dimension_index, relation),
                     "dimension_type": (
