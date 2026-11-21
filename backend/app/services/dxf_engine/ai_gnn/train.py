@@ -30,9 +30,9 @@ def _load_graphs(paths):
     graphs = []
     for path in paths:
         data = torch.load(path, map_location="cpu", weights_only=False)
-        if data.graph_metadata.get("feature_version") != 5:
+        if data.graph_metadata.get("feature_version") != 6:
             raise ValueError(
-                f"{path}: expected semantic graph feature_version=5; rebuild this graph."
+                f"{path}: expected semantic graph feature_version=6; rebuild this graph."
             )
         graphs.append((str(path), data))
     return graphs
@@ -253,8 +253,8 @@ def _save_training_checkpoint(
         "num_layers": num_layers,
         "dropout": dropout,
         "text_matching_trained": bool(text_matching_trained),
-        "feature_version": 5,
-        "architecture": "relation_aware_hybrid_text_match_v2",
+        "feature_version": 6,
+        "architecture": "relation_aware_hybrid_text_match_v3",
         "target_encoding": "log1p",
         "regression_targets": list(REGRESSION_TARGETS),
         "split": {
@@ -305,8 +305,8 @@ def _restore_training_checkpoint(
     )
 
     expected = {
-        "feature_version": 5,
-        "architecture": "relation_aware_hybrid_text_match_v2",
+        "feature_version": 6,
+        "architecture": "relation_aware_hybrid_text_match_v3",
         "input_dims": input_dims,
         "edge_dims": edge_dims,
         "hidden_channels": hidden_channels,
@@ -614,8 +614,8 @@ def train_model(
         "num_layers": num_layers,
         "dropout": dropout,
         "text_matching_trained": ("text_geometry_matching" in train_tasks),
-        "feature_version": 5,
-        "architecture": "relation_aware_hybrid_text_match_v2",
+        "feature_version": 6,
+        "architecture": "relation_aware_hybrid_text_match_v3",
         "target_encoding": "log1p",
         "regression_targets": list(REGRESSION_TARGETS),
         "best_validation_loss": best_validation_loss,
