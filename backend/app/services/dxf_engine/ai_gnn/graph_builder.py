@@ -474,8 +474,9 @@ def build_semantic_graph(
 ):
     """Build a DXF engineering HeteroData graph.
 
-    Existing geometry/dimension/text node types and their feature dimensions
-    are preserved, with a radius descriptor added to the geometry features.
+    Geometry nodes use the 24-value v6 prefix plus 19 versioned v7 shape
+    descriptors (43 inputs total). Dimension, text, anchor and edge schemas
+    remain unchanged.
     The graph also includes anchors, dimension-to-geometry/anchor candidates,
     and dimension-to-dimension candidate relationships.
 
