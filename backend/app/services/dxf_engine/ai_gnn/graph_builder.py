@@ -1507,7 +1507,7 @@ def build_semantic_graph(
             "normalized_axis_midpoint_x", "normalized_axis_midpoint_y",
             "mirror_confidence",
         ],
-        "text_annotation_policy": "ANNOTATION nodes retained; no text-to-geometry edge",
+        "text_annotation_policy": "ANNOTATION nodes retained; no text-to-dimension or text-to-geometry edges",
         "collinear_tolerance": float(collinear_tolerance),
         "tangent_tolerance_degrees": float(tangent_tolerance_degrees),
         "curvature_tolerance": float(curvature_tolerance),
