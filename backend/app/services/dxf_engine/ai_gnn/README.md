@@ -175,6 +175,27 @@ python -m app.services.dxf_engine.ai_gnn.labels \
   --output labeled/drawing_001_v5.pt
 ```
 
+### Reviewed text-to-geometry correspondence labels
+
+The candidate edges are not treated as ground truth. To train the correspondence
+head, add reviewed rows to the same CSV/JSON label file used for geometry
+labels:
+
+```csv
+text_handle,geometry_handle,relation_type,is_match
+T100,CIRCLE_01,dimension_value_candidate,1
+T101,PLATE_03,part_label_candidate,1
+T100,LINE_88,dimension_value_candidate,0
+```
+
+Use `is_match=1` for a reviewed correct correspondence and `0` for a reviewed
+negative candidate. `relation_type=*` applies the reviewed pair label to all
+semantic candidate relation types. Unlisted candidates remain masked; they are
+not silently treated as negatives. Include hard negatives from the same
+drawing when possible. The training objective adds a binary correspondence
+loss only for reviewed edges, and validation reports text-link precision,
+recall, F1, and labeled-edge count.
+
 ## Train / validation / test
 
 Split by complete drawings or projects, never by geometry rows from the same
