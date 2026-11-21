@@ -23,7 +23,7 @@ GEOMETRY_FEATURE_NAMES = (
     "hole_count_log",
     "hole_perimeter_log_over_scale",
     "hole_boundary_fraction",
-    "boundary_to_hull_perimeter_ratio",
+    "convex_hull_to_boundary_perimeter_ratio",
     "is_polygonal",
     "is_circle_or_arc",
     "has_perimeter",
@@ -188,7 +188,7 @@ def extract_geometry_descriptors(element, scale: float = 1.0) -> list[float]:
         if has_hole_data and perimeter_raw > 1e-9 else 0.0
     )
     hull_ratio = (
-        min(1.0, max(0.0, perimeter_raw / hull_perimeter_raw))
+        min(1.0, max(0.0, hull_perimeter_raw / perimeter_raw))
         if hull_perimeter_raw > 1e-9 else 0.0
     )
 
