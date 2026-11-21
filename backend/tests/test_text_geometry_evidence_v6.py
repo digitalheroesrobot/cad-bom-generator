@@ -144,3 +144,35 @@ def test_collinear_tolerance_is_independent_and_curvature_is_not_assumed():
     assert _collinear_score(
         bent, second, None, direction, 10.0
     ) == 0.0
+
+
+def test_curvature_and_tangent_are_geometry_relation_evidence():
+    first = Point(0, 0).buffer(25, resolution=32)
+    second = Point(60, 0).buffer(25, resolution=32)
+    elements = []
+    for handle, geom in (("C1", first), ("C2", second)):
+        elements.append({
+            "element_id": handle,
+            "source_handle": handle,
+            "source": {"entity_handle": handle, "entity_type": "CIRCLE", "layer": "0"},
+            "geometry_2d": geom,
+            "geometry_type": "CLOSED_PROFILE",
+            "center": (geom.centroid.x, geom.centroid.y),
+            "is_closed": True,
+            "is_valid": True,
+            "radius": 25.0,
+        })
+    graph = build_semantic_graph(
+        geometry_elements=elements,
+        dimension_elements=[],
+        text_elements=[],
+        spatial_tolerance=100.0,
+    )
+    edge_type = ("geometry", "near", "geometry")
+    edge_index = graph[edge_type].edge_index
+    edge_attr = graph[edge_type].edge_attr
+    assert edge_index.size(1) == 1
+    # Geometry relation features 7 and 8 are tangent continuity and
+    # curvature similarity respectively.
+    assert edge_attr[0, 7].item() > 0.8
+    assert edge_attr[0, 8].item() > 0.9
