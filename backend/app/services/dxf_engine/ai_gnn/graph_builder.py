@@ -382,8 +382,9 @@ def _anchor_specs(element):
         c = geom.centroid
         center = (float(c.x), float(c.y))
     if entity_type in {"CIRCLE", "ARC"}:
-        radius = _get(element, "radius")
-        curvature = 1.0 / max(abs(_safe_float(radius)), 1e-9) if radius is not None else 0.0
+        # Estimate curvature from tessellated geometry, not raw DXF radius,
+        # to avoid leaking the supervised radius target into model inputs.
+        curvature = _local_curvature_summary(geom) or 0.0
         specs.append((center, "CENTER", (0.0, 0.0), curvature))
     if entity_type == "CIRCLE":
         return specs
@@ -749,7 +750,8 @@ def build_semantic_graph(
                     tangent_continuity = max(0.0, 1.0 - tangent_angle / max(tangent_tol, 1e-9))
                 curvature_a, curvature_b = _local_curvature_summary(ga), _local_curvature_summary(gb)
                 if curvature_a is not None and curvature_b is not None:
-                    curvature_similarity = math.exp(-abs(curvature_a - curvature_b) / max(curvature_tolerance, 1e-9))
+                    curvature_delta = min(abs(curvature_a - curvature_b), abs(curvature_a + curvature_b))
+                    curvature_similarity = math.exp(-curvature_delta / max(curvature_tolerance, 1e-9))
 
             relation_records = []
             if distance <= spatial_tolerance:
@@ -1034,6 +1036,10 @@ def build_semantic_graph(
                     continue
                 try:
                     if requested_anchor_kind == "CENTER":
+                        if dim_type in {"RADIUS", "DIAMETRIC"}:
+                            entity_type = str(_get(_get(element, "source"), "entity_type", "")).upper()
+                            if entity_type not in {"CIRCLE", "ARC"}:
+                                continue
                         element_center = _xy(_get(element, "center"))
                         if element_center is None:
                             centroid = geom.centroid
@@ -1194,11 +1200,12 @@ def build_semantic_graph(
                 float(entity_type in {"CIRCLE", "ARC"}),
                 float(bool(_get(element, "is_closed", False))),
             ]
-            candidates.append((distance, -semantic_score, gi, edge_attrs))
+            combined_rank = 0.70 * (distance / max(text_tolerance, 1e-9)) + 0.30 * (1.0 - semantic_score)
+            candidates.append((combined_rank, distance, -semantic_score, gi, edge_attrs))
         # Semantic compatibility participates in candidate ranking, rather
         # than being considered only after a nearest-neighbour shortlist.
-        candidates.sort(key=lambda item: (item[0], item[1]))
-        for _, _, gi, edge_attrs in candidates[:max_neighbors]:
+        candidates.sort(key=lambda item: (item[0], item[1], item[2]))
+        for _, _, _, gi, edge_attrs in candidates[:max_neighbors]:
             _add_edge(edge_store, ("text", relation, "geometry"), ti, gi, edge_attrs)
 
     # --------------------------------------------------------------
