@@ -739,14 +739,16 @@ def build_semantic_graph(
             tangent_continuity = 0.0
             curvature_similarity = 0.0
             if seg_a and seg_b:
+                # Compare the closest actual segment pair, not only endpoint
+                # distances. The latter can select the wrong pair when two
+                # long segments approach or cross near their interiors.
                 sa, sb = min(
                     ((x, y) for x in seg_a for y in seg_b),
-                    key=lambda pair: min(
-                        math.dist(pair[0]["start"], pair[1]["start"]),
-                        math.dist(pair[0]["start"], pair[1]["end"]),
-                        math.dist(pair[0]["end"], pair[1]["start"]),
-                        math.dist(pair[0]["end"], pair[1]["end"]),
-                    ),
+                    key=lambda pair: LineString([
+                        pair[0]["start"], pair[0]["end"]
+                    ]).distance(LineString([
+                        pair[1]["start"], pair[1]["end"]
+                    ])),
                 )
                 tangent_angle = _angle_between(sa["direction"], sb["direction"])
                 if tangent_angle is not None:
