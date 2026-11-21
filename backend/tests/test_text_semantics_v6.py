@@ -119,7 +119,7 @@ def test_annotation_is_preserved_but_never_connected_to_geometry():
         scale=1.0, spatial_tolerance=50.0, dimension_tolerance=100.0,
         text_tolerance=50.0, collinear_tolerance=3.0,
     )
-    assert graph.graph_metadata["feature_version"] == 6
+    assert graph.graph_metadata["feature_version"] == 7
     assert graph["text"].semantic_type == ["DIMENSION_VALUE", "ANNOTATION"]
     assert graph["text"].has_diameter_symbol == [True, False]
     edge_type = ("text", "dimension_value_candidate", "geometry")
