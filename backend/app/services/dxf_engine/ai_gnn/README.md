@@ -27,7 +27,7 @@ estimates, direct and relation-based estimates, and per-task fusion weights.
 
 | Node | Feature dimension |
 |---|---:|
-| geometry | 43 |
+| geometry | 45 |
 | dimension | 17 |
 | text | 41 |
 | anchor | 12 |
@@ -334,8 +334,8 @@ v6 schema.
 
 ## Geometry feature schema v7
 
-The geometry node has 43 inputs: the preserved 24-value v6 prefix plus 19
-versioned descriptors from `geometry_features.py`. The 19-value suffix is
+The geometry node has 45 inputs: the preserved 24-value v6 prefix plus 19
+versioned descriptors from `geometry_features.py`. The 21-value suffix is
 ordered by `GEOMETRY_FEATURE_NAMES`; its final flags identify whether
 perimeter and interior-ring information are available. Unavailable values
 use numeric placeholders only alongside these validity flags.
