@@ -29,7 +29,17 @@ def normalize_text(content, config):
         if not pattern:
             continue
         flags = re.IGNORECASE if rule.get("ignore_case", False) else 0
-        value = re.sub(pattern, str(rule.get("replacement", "")), value, flags=flags)
+        replacement = str(rule.get("replacement", ""))
+        # JSON configuration uses the familiar $1/$2 capture syntax. Python's
+        # re.sub expects \\g<1>, so translate numbered references and expand
+        # them per match. This also keeps normal literal replacements intact.
+        replacement = re.sub(
+            r"\\$(\\d+)",
+            lambda match: r"\\g<" + match.group(1) + ">",
+            replacement,
+        )
+        compiled = re.compile(pattern, flags=flags)
+        value = compiled.sub(lambda match: match.expand(replacement), value)
     return value
 
 
