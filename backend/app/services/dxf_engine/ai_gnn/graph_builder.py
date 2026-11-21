@@ -1036,6 +1036,7 @@ def build_semantic_graph(
             if dist <= dimension_tolerance:
                 candidates.append((dist, gi))
         for dist, gi in sorted(candidates)[:max_neighbors]:
+            element = geometry_elements[gi]
             _add_edge(
                 edge_store, ("dimension", "describes", "geometry"),
                 di, gi,
