@@ -21,6 +21,8 @@ def load_text_config(path=None):
 def normalize_text(content, config):
     value = str(content or "")
     for rule in config.get("replacements", []):
+        if rule.get("enabled", True) is False:
+            continue
         pattern = str(rule.get("pattern", ""))
         if pattern:
             flags = re.IGNORECASE if rule.get("ignore_case", False) else 0
