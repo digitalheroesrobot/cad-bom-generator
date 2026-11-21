@@ -244,7 +244,7 @@ def _save_training_checkpoint(
         "num_layers": num_layers,
         "dropout": dropout,
         "feature_version": 5,
-        "architecture": "relation_aware_hybrid_v1",
+        "architecture": "relation_aware_hybrid_text_match_v2",
         "target_encoding": "log1p",
         "regression_targets": list(REGRESSION_TARGETS),
         "split": {
@@ -295,7 +295,7 @@ def _restore_training_checkpoint(
 
     expected = {
         "feature_version": 5,
-        "architecture": "relation_aware_hybrid_v1",
+        "architecture": "relation_aware_hybrid_text_match_v2",
         "input_dims": input_dims,
         "edge_dims": edge_dims,
         "hidden_channels": hidden_channels,
@@ -417,8 +417,9 @@ def train_model(
             "Training split needs independent ground-truth labels for: "
             + ", ".join(sorted(missing_train))
         )
-    missing_validation = (train_tasks & {"length", "area", "radius", "classification"}) - validation_tasks
-    missing_test = (train_tasks & {"length", "area", "radius", "classification"}) - test_tasks
+    required_eval_tasks = {"length", "area", "radius", "classification", "text_geometry_matching"}
+    missing_validation = (train_tasks & required_eval_tasks) - validation_tasks
+    missing_test = (train_tasks & required_eval_tasks) - test_tasks
     if missing_validation:
         raise ValueError(
             "Validation split has no labels for trained task(s): "
@@ -529,7 +530,8 @@ def train_model(
                 f"val_loss={validation_loss:.5f} "
                 f"val_len_MAE={validation_metrics['length_mae']} "
                 f"val_area_MAE={validation_metrics['area_mae']} "
-                f"val_radius_MAE={validation_metrics['radius_mae']}"
+                f"val_radius_MAE={validation_metrics['radius_mae']} "
+                f"val_text_link_F1={validation_metrics['text_link_f1']}"
             )
         if epoch % checkpoint_every == 0:
             _save_training_checkpoint(
@@ -597,7 +599,7 @@ def train_model(
         "num_layers": num_layers,
         "dropout": dropout,
         "feature_version": 5,
-        "architecture": "relation_aware_hybrid_v1",
+        "architecture": "relation_aware_hybrid_text_match_v2",
         "target_encoding": "log1p",
         "regression_targets": list(REGRESSION_TARGETS),
         "best_validation_loss": best_validation_loss,
