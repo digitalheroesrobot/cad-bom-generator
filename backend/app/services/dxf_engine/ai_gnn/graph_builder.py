@@ -818,7 +818,7 @@ def build_semantic_graph(
                 # orientations are not quantized to 5-degree increments.
                 for axis_degrees in range(0, 180, 5):
                     rotated = affine_rotate(gb, -axis_degrees, origin=midpoint)
-                    reflected = affine_scale(rotated, xfact=-1.0, yfact=1.0, origin=midpoint)
+                    reflected = affine_scale(rotated, xfact=1.0, yfact=-1.0, origin=midpoint)
                     reflected = affine_rotate(reflected, axis_degrees, origin=midpoint)
                     error = float(ga.hausdorff_distance(reflected))
                     if best_mirror is None or error < best_mirror[0]:
@@ -828,7 +828,7 @@ def build_semantic_graph(
                     for axis_degrees in range(coarse_axis - 5, coarse_axis + 6):
                         axis_degrees %= 180
                         rotated = affine_rotate(gb, -axis_degrees, origin=midpoint)
-                        reflected = affine_scale(rotated, xfact=-1.0, yfact=1.0, origin=midpoint)
+                        reflected = affine_scale(rotated, xfact=1.0, yfact=-1.0, origin=midpoint)
                         reflected = affine_rotate(reflected, axis_degrees, origin=midpoint)
                         error = float(ga.hausdorff_distance(reflected))
                         if error < best_mirror[0]:
