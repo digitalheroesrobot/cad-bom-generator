@@ -750,7 +750,42 @@ def build_semantic_graph(
                         pair[1]["start"], pair[1]["end"]
                     ])),
                 )
-                tangent_angle = _angle_between(sa["direction"], sb["direction"])
+                tangent_a, tangent_b = sa["direction"], sb["direction"]
+
+                # Tessellated circles/arcs approximate a smooth curve with
+                # chords. Comparing the chord directions directly introduces
+                # a quantization error (for example, 2.8 degrees for a
+                # 128-segment circle) even when the true local tangents agree.
+                # Recover the tangent at the nearest boundary point from the
+                # radial direction for circular entities; retain segment
+                # tangents for lines and other non-circular geometry.
+                try:
+                    nearest_a, nearest_b = nearest_points(ga, gb)
+                    for item, nearest, fallback, slot in (
+                        (a, nearest_a, tangent_a, 0),
+                        (b, nearest_b, tangent_b, 1),
+                    ):
+                        entity_type = str(
+                            _get(_get(item, "source"), "entity_type", "")
+                        ).upper()
+                        if entity_type not in {"CIRCLE", "ARC"}:
+                            continue
+                        center = _xy(_get(item, "center"))
+                        if center is None:
+                            centroid = _get(item, "geometry_2d").centroid
+                            center = (float(centroid.x), float(centroid.y))
+                        radial = _unit_direction(center, (nearest.x, nearest.y))
+                        if math.hypot(*radial) <= 1e-9:
+                            continue
+                        local_tangent = (-radial[1], radial[0])
+                        if slot == 0:
+                            tangent_a = local_tangent
+                        else:
+                            tangent_b = local_tangent
+                except Exception:
+                    pass
+
+                tangent_angle = _angle_between(tangent_a, tangent_b)
                 if tangent_angle is not None:
                     tangent_continuity = max(0.0, 1.0 - tangent_angle / max(tangent_tol, 1e-9))
                 curvature_a, curvature_b = _local_curvature_summary(ga), _local_curvature_summary(gb)
