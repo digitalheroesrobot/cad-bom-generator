@@ -154,8 +154,9 @@ for open geometry and radius for entities other than CIRCLE/ARC.
 ## Rebuild graphs and labels
 
 Feature version 6 is incompatible with version 3, version 4, and version 5
-graphs and checkpoints. The text-correspondence heads also change the model checkpoint
-architecture, so retrain from scratch after rebuilding and relabeling graphs.
+graphs and checkpoints. The expanded 38-value text-to-geometry edge schema changes the model
+checkpoint architecture, so retrain from scratch after rebuilding and
+relabeling graphs.
 Rebuild every graph, regenerate labeled graphs, and retrain before inference.
 
 ```python
