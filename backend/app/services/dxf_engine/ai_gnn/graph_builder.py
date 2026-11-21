@@ -1095,42 +1095,121 @@ def build_semantic_graph(
     # Reverse ownership edges are materialized in the common reverse-edge pass.
 
     # --------------------------------------------------------------
-    # Text -> geometry candidates: preserve original proximity behavior.
+    # Text -> geometry semantic candidates (v5).
+    # Annotation nodes are retained but cannot create geometry edges.
     # --------------------------------------------------------------
-    for ti, text in enumerate(text_elements):
-        query = _get(text, "bound") or _get(text, "bound_moved")
-        if query is None:
-            pos = _xy(_get(text, "position")) or _xy(_get(text, "position_moved"))
-            query = Point(pos) if pos else None
-        if query is None:
+    text_semantics, text_centers, text_bounds, text_measurements = [], [], [], []
+    for text in text_elements:
+        category, normalized = classify_text(_get(text, "text", ""), text_config)
+        evidence = parse_measurement_evidence(normalized, text_config)
+        bound = _get(text, "bound") or _get(text, "bound_moved")
+        center = _xy(_get(text, "position")) or _xy(_get(text, "position_moved"))
+        if center is None and bound is not None and not bound.is_empty:
+            c = bound.centroid
+            center = (float(c.x), float(c.y))
+        center = center or (0.0, 0.0)
+        if bound is None or getattr(bound, "is_empty", True):
+            bound = Point(center)
+        text_semantics.append(category)
+        text_centers.append(center)
+        text_bounds.append(bound)
+        text_measurements.append(evidence)
+
+    geometry_centers_for_text = []
+    for element in geometry_elements:
+        geom = _get(element, "geometry_2d")
+        if geom is None or geom.is_empty:
+            geometry_centers_for_text.append(None)
             continue
+        center = _xy(_get(element, "center"))
+        if center is None:
+            c = geom.centroid
+            center = (float(c.x), float(c.y))
+        geometry_centers_for_text.append(center)
+
+    data["text"].semantic_type = list(text_semantics)
+    data["text"].normalized_content = [normalize_text(_get(t, "text", ""), text_config) for t in text_elements]
+    data["text"].has_diameter_symbol = [bool(x["has_diameter_symbol"]) for x in text_measurements]
+    data["text"].diameter_value = [
+        float(x["diameter_value"]) if x["diameter_value"] is not None else float("nan")
+        for x in text_measurements
+    ]
+    data["text"].has_radius_symbol = [bool(x["has_radius_symbol"]) for x in text_measurements]
+    data["text"].radius_value = [
+        float(x["radius_value"]) if x["radius_value"] is not None else float("nan")
+        for x in text_measurements
+    ]
+
+    compatibility = text_config.get("semantic_compatibility", {})
+    relation_by_category = {
+        "DIMENSION_VALUE": "dimension_value_candidate",
+        "PART_LABEL": "part_label_candidate",
+        "GEOMETRY_DESCRIPTION": "geometry_description_candidate",
+        "TOLERANCE_GDT": "gdt_candidate",
+    }
+    for ti, text in enumerate(text_elements):
+        category = text_semantics[ti]
+        relation = relation_by_category.get(category)
+        if relation is None:
+            # In particular, ANNOTATION is intentionally excluded here.
+            continue
+        query, text_center = text_bounds[ti], text_centers[ti]
+        measurement = text_measurements[ti]
         candidates = []
-        candidate_indices = candidate_geometry_indices(query, text_tolerance)
-        for gi in candidate_indices:
+        for gi in candidate_geometry_indices(query, text_tolerance):
             element = geometry_elements[gi]
             geom = _get(element, "geometry_2d")
             if geom is None or geom.is_empty:
                 continue
-            distance = float(query.distance(geom))
-            if distance <= text_tolerance:
-                candidates.append((distance, gi))
-        for distance, gi in sorted(candidates)[:max_neighbors]:
-            _add_edge(
-                edge_store, ("text", "describes", "geometry"),
-                ti, gi,
-                [distance / scale_safe, max(0.0, 1.0 - distance / max(text_tolerance, 1e-9))],
+            bbox_distance = float(query.distance(geom.envelope))
+            text_center_distance = float(Point(text_center).distance(geom))
+            geom_center = geometry_centers_for_text[gi]
+            center_distance = (
+                math.hypot(text_center[0] - geom_center[0], text_center[1] - geom_center[1])
+                if geom_center is not None else float("inf")
             )
+            entity_type = str(_get(_get(element, "source"), "entity_type", "OTHER")).upper()
+            allowed = {str(v).upper() for v in compatibility.get(category, [])}
+            semantic_score = 1.0 if entity_type in allowed else 0.35
+            if category == "DIMENSION_VALUE" and (
+                measurement["has_diameter_symbol"] or measurement["has_radius_symbol"]
+            ):
+                semantic_score = 1.0 if entity_type in {"CIRCLE", "ARC", "ELLIPSE"} else 0.10
+            elif category == "DIMENSION_VALUE" and entity_type in {"CIRCLE", "ARC"}:
+                semantic_score = 0.85
+            distance = min(bbox_distance, text_center_distance, center_distance)
+            if distance > text_tolerance:
+                continue
+            proximity = max(0.0, 1.0 - distance / max(text_tolerance, 1e-9))
+            diameter_value, radius_value = measurement["diameter_value"], measurement["radius_value"]
+            edge_attrs = [
+                bbox_distance / scale_safe,
+                text_center_distance / scale_safe,
+                center_distance / scale_safe if math.isfinite(center_distance) else 0.0,
+                distance / scale_safe, proximity, semantic_score,
+                float(measurement["has_diameter_symbol"]),
+                float(measurement["has_radius_symbol"]),
+                float(diameter_value is not None), float(diameter_value or 0.0) / scale_safe,
+                float(radius_value is not None), float(radius_value or 0.0) / scale_safe,
+                float(entity_type in {"CIRCLE", "ARC"}),
+                float(bool(_get(element, "is_closed", False))),
+            ]
+            candidates.append((distance, -semantic_score, gi, edge_attrs))
+        # Semantic compatibility participates in candidate ranking, rather
+        # than being considered only after a nearest-neighbour shortlist.
+        candidates.sort(key=lambda item: (item[0], item[1]))
+        for _, _, gi, edge_attrs in candidates[:max_neighbors]:
+            _add_edge(edge_store, ("text", relation, "geometry"), ti, gi, edge_attrs)
 
     # --------------------------------------------------------------
-    # Text-to-dimension matching candidates (dimension annotation linkage)
+    # Text -> dimension candidates. This gives dimension values and GD&T
+    # a path into the existing Dimension -> Anchor -> Geometry evidence.
     # --------------------------------------------------------------
     for ti, text in enumerate(text_elements):
-        query = _get(text, "bound") or _get(text, "bound_moved")
-        if query is None:
-            pos = _xy(_get(text, "position")) or _xy(_get(text, "position_moved"))
-            query = Point(pos) if pos else None
-        if query is None:
+        category = text_semantics[ti]
+        if category == "UNKNOWN":
             continue
+        query = text_bounds[ti]
         matches = []
         for di, dimension in enumerate(dimension_elements):
             endpoints = _get(dimension, "endpoints") or []
@@ -1145,13 +1224,27 @@ def build_semantic_graph(
             except Exception:
                 continue
             if distance <= dimension_tolerance:
-                matches.append((distance, di))
-        for distance, di in sorted(matches)[:max_neighbors]:
+                dim_type = str(_get(dimension, "dimension_type", "UNKNOWN")).upper()
+                if category == "DIMENSION_VALUE":
+                    semantic_score = 1.0 if dim_type in {"LINEAR", "ALIGNED", "DIAMETRIC", "RADIUS"} else 0.25
+                elif category == "TOLERANCE_GDT":
+                    semantic_score = 1.0 if dim_type in {"ANGULAR", "ANGULAR_3P", "DIAMETRIC", "RADIUS"} else 0.4
+                else:
+                    semantic_score = 0.7
+                matches.append((distance, -semantic_score, di, semantic_score))
+        for distance, _, di, semantic_score in sorted(matches)[:max_neighbors]:
+            evidence = text_measurements[ti]
             confidence = max(0.0, 1.0 - distance / max(float(dimension_tolerance), 1e-9))
-            _add_edge(
-                edge_store, ("text", "labels", "dimension"), ti, di,
-                [distance / scale_safe, confidence],
-            )
+            attrs = [
+                distance / scale_safe, confidence, semantic_score,
+                float(evidence["has_diameter_symbol"]),
+                float(evidence["has_radius_symbol"]),
+                float(evidence["diameter_value"] is not None),
+                float(evidence["diameter_value"] or 0.0) / scale_safe,
+                float(evidence["radius_value"] is not None),
+                float(evidence["radius_value"] or 0.0) / scale_safe,
+            ]
+            _add_edge(edge_store, ("text", "labels", "dimension"), ti, di, attrs)
 
     # --------------------------------------------------------------
     # Dimension-to-dimension relationships
@@ -1278,7 +1371,11 @@ def build_semantic_graph(
         ("dimension", "measures_from", "anchor"): 2,
         ("dimension", "measures_to", "anchor"): 2,
         ("text", "describes", "geometry"): 2,
-        ("text", "labels", "dimension"): 2,
+        ("text", "dimension_value_candidate", "geometry"): 14,
+        ("text", "part_label_candidate", "geometry"): 14,
+        ("text", "geometry_description_candidate", "geometry"): 14,
+        ("text", "gdt_candidate", "geometry"): 14,
+        ("text", "labels", "dimension"): 9,
         ("dimension", "near", "dimension"): 5,
         ("dimension", "parallel", "dimension"): 5,
         ("dimension", "same_axis", "dimension"): 5,
@@ -1324,6 +1421,23 @@ def build_semantic_graph(
     data.graph_metadata = {
         "graph_type": "dxf_semantic_heterogeneous",
         "feature_version": 5,
+        "text_semantics_config": str(text_config_path or "text_semantics.json"),
+        "text_semantics_categories": {
+            category: int(sum(value == category for value in text_semantics))
+            for category in sorted(set(text_semantics))
+        },
+        "text_geometry_edge_features": [
+            "bbox_distance", "text_center_to_geometry_distance",
+            "text_center_to_geometry_center_distance", "minimum_distance",
+            "proximity", "semantic_compatibility", "has_diameter_symbol",
+            "has_radius_symbol", "diameter_value_valid", "diameter_value",
+            "radius_value_valid", "radius_value", "geometry_is_circle_or_arc",
+            "geometry_is_closed",
+        ],
+        "text_annotation_policy": "ANNOTATION nodes retained; no text-to-geometry edge",
+        "collinear_tolerance": float(collinear_tolerance),
+        "tangent_tolerance_degrees": float(tangent_tolerance_degrees),
+        "curvature_tolerance": float(curvature_tolerance),
         "origin": origin,
         "scale": float(scale_safe),
         "node_counts": {
