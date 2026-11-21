@@ -20,13 +20,14 @@ def _element(geometry, entity_type="LWPOLYLINE", closed=True):
 def test_v7_descriptor_schema_is_fixed_finite_and_has_no_area_leakage():
     polygon = Point(0, 0).buffer(20, resolution=24)
     values = extract_geometry_descriptors(_element(polygon, "CIRCLE"), scale=2.0)
-    assert len(GEOMETRY_FEATURE_NAMES) == 19
+    assert len(GEOMETRY_FEATURE_NAMES) == 21
     assert len(values) == len(GEOMETRY_FEATURE_NAMES)
     assert all(math.isfinite(value) for value in values)
     forbidden = {"area", "area_over_scale_squared", "bbox_fill_ratio", "solidity", "circularity"}
     assert not forbidden.intersection(GEOMETRY_FEATURE_NAMES)
-    assert values[16] == 1.0  # circle/arc indicator
-    assert values[17] == 1.0  # perimeter is available
+    assert values[17] == 1.0  # circle indicator
+    assert values[18] == 0.0  # not an ARC
+    assert values[19] == 1.0  # perimeter is available
 
 
 def test_hole_topology_is_extracted_without_exposing_hole_area():
@@ -66,3 +67,13 @@ def test_open_geometry_marks_hole_information_unavailable():
     assert by_name["has_perimeter"] == 1.0
     assert by_name["has_hole_data"] == 0.0
     assert by_name["hole_count_log"] == 0.0
+
+
+def test_arc_entity_exposes_arc_length_but_not_circle_flag():
+    from shapely.geometry import LineString
+    arc_like = LineString([(10, 0), (7, 7), (0, 10)])
+    values = extract_geometry_descriptors(_element(arc_like, "ARC", closed=False), scale=2.0)
+    by_name = dict(zip(GEOMETRY_FEATURE_NAMES, values))
+    assert by_name["arc_length_log_over_scale"] > 0.0
+    assert by_name["is_arc"] == 1.0
+    assert by_name["is_circle"] == 0.0
