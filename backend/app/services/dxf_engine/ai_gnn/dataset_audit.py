@@ -404,9 +404,15 @@ def audit_graph(path: str, class_names: dict[int, str]) -> dict[str, Any]:
         store = _get_store(data, node_type)
         count = _store_num_nodes(store)
         total_nodes += count
+        feature_summary = _feature_summary(getattr(store, "x", None))
+        if node_type == "geometry" and feature_summary is not None:
+            feature_names = metadata.get("geometry_feature_names", [])
+            for index, name in enumerate(feature_names):
+                if index < len(feature_summary["columns"]):
+                    feature_summary["columns"][index]["name"] = str(name)
         node_summary[node_type] = {
             "count": count,
-            "feature_summary": _feature_summary(getattr(store, "x", None)),
+            "feature_summary": feature_summary,
         }
 
     edge_summary = {}
@@ -443,6 +449,8 @@ def audit_graph(path: str, class_names: dict[int, str]) -> dict[str, Any]:
         "file": str(graph_path),
         "file_size_bytes": graph_path.stat().st_size,
         "feature_version": metadata.get("feature_version"),
+        "geometry_feature_schema": metadata.get("geometry_feature_schema"),
+        "geometry_feature_names": _plain(metadata.get("geometry_feature_names", [])),
         "target_encoding": metadata.get("target_encoding"),
         "target_validity": _plain(metadata.get("target_validity", {})),
         "target_provenance": metadata.get("target_provenance"),
