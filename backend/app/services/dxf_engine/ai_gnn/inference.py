@@ -108,10 +108,43 @@ def predict_geometry(data, checkpoint_path: str, device: str | None = None):
         raise ValueError(
             "GNN feature version mismatch; rebuild graph and retrain checkpoint."
         )
+    # Relation modules are named by their position in metadata.edge_types.
+    # PyG may expose the same edge types in a different order when a new graph
+    # is built, so recreate the training-time order from the checkpoint's
+    # insertion-ordered edge_dims mapping before constructing the model.
+    checkpoint_edge_dims = checkpoint.get(
+        "edge_dims", data.graph_metadata.get("edge_feature_dims", {})
+    )
+    if checkpoint.get("edge_dims"):
+        checkpoint_edge_types = [
+            tuple(edge_key.split("|")) for edge_key in checkpoint["edge_dims"]
+        ]
+        if any(len(edge_type) != 3 for edge_type in checkpoint_edge_types):
+            raise ValueError(
+                "Checkpoint contains an invalid edge type key; expected "
+                "'source|relation|target'."
+            )
+        current_edge_types = set(data.edge_types)
+        checkpoint_edge_type_set = set(checkpoint_edge_types)
+        if current_edge_types != checkpoint_edge_type_set:
+            missing = sorted(checkpoint_edge_type_set - current_edge_types)
+            unexpected = sorted(current_edge_types - checkpoint_edge_type_set)
+            raise ValueError(
+                "GNN relation schema mismatch. "
+                f"Missing relations in input graph: {missing}; "
+                f"unexpected relations: {unexpected}. "
+                "Rebuild the graph with the same graph-builder version used "
+                "for this checkpoint, or retrain the model."
+            )
+        model_metadata = (data.node_types, checkpoint_edge_types)
+    else:
+        # Compatibility path for older checkpoints that did not store edge_dims.
+        model_metadata = data.metadata()
+
     model = DXFSemanticGNN(
-        metadata=data.metadata(),
+        metadata=model_metadata,
         input_dims=checkpoint["input_dims"],
-        edge_dims=checkpoint.get("edge_dims", data.graph_metadata.get("edge_feature_dims", {})),
+        edge_dims=checkpoint_edge_dims,
         hidden_channels=checkpoint["hidden_channels"],
         num_classes=max(1, max(checkpoint.get("class_to_id", {}).values(), default=-1) + 1),
         num_layers=checkpoint["num_layers"],
