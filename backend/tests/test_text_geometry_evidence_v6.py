@@ -82,7 +82,7 @@ def test_annotation_is_retained_but_never_links_to_geometry_or_dimension():
             "element_id": "T2",
             "source_handle": "T2",
             "source": {"entity_handle": "T2", "entity_type": "MTEXT", "layer": "NOTE"},
-            "text": "均布荷载 2.5kN/m",
+            "text": "NOTE: 均布荷载 Ø50 2.5kN/m",
             "position": (5, 5),
             "bound": Point(5, 5),
             "angle": 0.0,
