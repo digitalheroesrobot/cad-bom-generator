@@ -1129,9 +1129,36 @@ def build_semantic_graph(
     # Reverse ownership edges are materialized in the common reverse-edge pass.
 
     # --------------------------------------------------------------
-    # Text -> geometry semantic candidates (v5).
-    # Annotation nodes are retained but cannot create geometry edges.
+    # Text -> geometry semantic candidates (v6).
+    # Annotation nodes are retained but cannot create geometry evidence.
     # --------------------------------------------------------------
+    # Collect the existing Dimension -> Geometry evidence so that a text
+    # diameter/radius callout can be checked against a dimension already
+    # attached through its measured points/anchors.
+    dimension_evidence_by_geometry = defaultdict(list)
+    for relation_name in ("describes", "measures_from", "measures_to"):
+        relation_type = ("dimension", relation_name, "geometry")
+        for dimension_index, geometry_index, edge_attrs in edge_store.get(relation_type, []):
+            dimension = dimension_elements[dimension_index]
+            kind = str(_get(dimension, "dimension_type", "UNKNOWN")).upper()
+            displayed = _get(dimension, "length")
+            actual = _get(dimension, "actual_length")
+            try:
+                value = float(displayed)
+                value_valid = math.isfinite(value)
+            except (TypeError, ValueError, OverflowError):
+                try:
+                    value = float(actual)
+                    value_valid = math.isfinite(value)
+                except (TypeError, ValueError, OverflowError):
+                    value, value_valid = 0.0, False
+            dimension_evidence_by_geometry[geometry_index].append({
+                "kind": kind,
+                "value": value if value_valid else 0.0,
+                "value_valid": value_valid,
+                "distance": _safe_float(edge_attrs[0]) * scale_safe if edge_attrs else float("inf"),
+            })
+
     text_semantics, text_centers, text_bounds, text_measurements = [], [], [], []
     for text in text_elements:
         category, normalized = classify_text(_get(text, "text", ""), text_config)
@@ -1175,6 +1202,27 @@ def build_semantic_graph(
     ]
 
     compatibility = text_config.get("semantic_compatibility", {})
+    geometry_type_compatibility = text_config.get(
+        "semantic_compatibility_geometry_types", {}
+    )
+    ranking = text_config.get("candidate_ranking", {})
+    bbox_weight = float(ranking.get("bbox_distance_weight", 0.40))
+    center_weight = float(ranking.get("text_center_to_geometry_weight", 0.35))
+    centroid_weight = float(ranking.get("text_center_to_geometry_center_weight", 0.25))
+    weight_sum = max(bbox_weight + center_weight + centroid_weight, 1e-9)
+    bbox_weight, center_weight, centroid_weight = (
+        bbox_weight / weight_sum, center_weight / weight_sum,
+        centroid_weight / weight_sum,
+    )
+    spatial_rank_weight = float(ranking.get("spatial_rank_weight", 0.65))
+    semantic_rank_weight = float(ranking.get("semantic_rank_weight", 0.35))
+    rank_weight_sum = max(spatial_rank_weight + semantic_rank_weight, 1e-9)
+    spatial_rank_weight /= rank_weight_sum
+    semantic_rank_weight /= rank_weight_sum
+    maximum_spatial_rank = max(
+        0.0, float(ranking.get("maximum_spatial_rank", 1.25))
+    )
+
     relation_by_category = {
         "DIMENSION_VALUE": "dimension_value_candidate",
         "PART_LABEL": "part_label_candidate",
@@ -1195,64 +1243,205 @@ def build_semantic_graph(
             geom = _get(element, "geometry_2d")
             if geom is None or geom.is_empty:
                 continue
+
+            # Keep all three independent distances. A zero bounding-box gap
+            # must not hide a text-center or geometry-center mismatch.
             bbox_distance = float(query.distance(geom.envelope))
             text_center_distance = float(Point(text_center).distance(geom))
             geom_center = geometry_centers_for_text[gi]
             center_distance = (
-                math.hypot(text_center[0] - geom_center[0], text_center[1] - geom_center[1])
-                if geom_center is not None else float("inf")
+                math.hypot(
+                    text_center[0] - geom_center[0],
+                    text_center[1] - geom_center[1],
+                ) if geom_center is not None else float("inf")
             )
-            entity_type = str(_get(_get(element, "source"), "entity_type", "OTHER")).upper()
-            allowed = {str(v).upper() for v in compatibility.get(category, [])}
-            semantic_score = 1.0 if entity_type in allowed else 0.35
+            bbox_norm = min(bbox_distance / max(text_tolerance, 1e-9), 2.0)
+            center_norm = min(text_center_distance / max(text_tolerance, 1e-9), 2.0)
+            centroid_norm = (
+                min(center_distance / max(text_tolerance, 1e-9), 2.0)
+                if math.isfinite(center_distance) else 2.0
+            )
+            spatial_rank = (
+                bbox_weight * bbox_norm
+                + center_weight * center_norm
+                + centroid_weight * centroid_norm
+            )
+            if spatial_rank > maximum_spatial_rank:
+                continue
+            combined_distance = spatial_rank * max(float(text_tolerance), 1e-9)
+            proximity = max(
+                0.0, 1.0 - spatial_rank / max(maximum_spatial_rank, 1e-9)
+            )
+
+            entity_type = str(
+                _get(_get(element, "source"), "entity_type", "OTHER")
+            ).upper()
+            geometry_type = str(_get(element, "geometry_type", "OTHER")).upper()
+            allowed_entities = {
+                str(v).upper() for v in compatibility.get(category, [])
+            }
+            allowed_geometry_types = {
+                str(v).upper()
+                for v in geometry_type_compatibility.get(category, [])
+            }
+            entity_compatible = entity_type in allowed_entities if allowed_entities else True
+            shape_compatible = (
+                geometry_type in allowed_geometry_types
+                if allowed_geometry_types else True
+            )
+            semantic_score = (
+                1.0 if entity_compatible and shape_compatible
+                else 0.65 if entity_compatible or shape_compatible
+                else 0.25
+            )
             if category == "DIMENSION_VALUE" and (
                 measurement["has_diameter_symbol"] or measurement["has_radius_symbol"]
             ):
-                semantic_score = 1.0 if entity_type in {"CIRCLE", "ARC", "ELLIPSE"} else 0.10
-            elif category == "DIMENSION_VALUE" and entity_type in {"CIRCLE", "ARC"}:
-                semantic_score = 0.85
-            distance = min(bbox_distance, text_center_distance, center_distance)
-            if distance > text_tolerance:
-                continue
-            proximity = max(0.0, 1.0 - distance / max(text_tolerance, 1e-9))
-            diameter_value, radius_value = measurement["diameter_value"], measurement["radius_value"]
+                circular_entity = entity_type in {"CIRCLE", "ARC", "ELLIPSE"}
+                closed_profile = bool(_get(element, "is_closed", False))
+                semantic_score = (
+                    1.0 if circular_entity or closed_profile else 0.05
+                )
+
+            diameter_value = measurement["diameter_value"]
+            radius_value = measurement["radius_value"]
             geom_bounds = _bounds(geom)
-            geom_span = max(
+            span_x, span_y = (
                 (geom_bounds[2] - geom_bounds[0], geom_bounds[3] - geom_bounds[1])
                 if geom_bounds else (0.0, 0.0)
             )
+            geom_span = max(span_x, span_y)
             diameter_fit = (
-                abs(diameter_value - geom_span) / max(abs(diameter_value), abs(geom_span), 1e-9)
+                abs(diameter_value - geom_span)
+                / max(abs(diameter_value), abs(geom_span), 1e-9)
                 if diameter_value is not None else 0.0
             )
             radius_fit = (
-                abs(2.0 * radius_value - geom_span) / max(2.0 * abs(radius_value), abs(geom_span), 1e-9)
+                abs(2.0 * radius_value - geom_span)
+                / max(2.0 * abs(radius_value), abs(geom_span), 1e-9)
                 if radius_value is not None else 0.0
             )
+
+            # Compare text values with actual linked dimension semantics.
+            # DIAMETRIC dimensions carry diameter values; RADIUS dimensions
+            # carry radius values. This is additional evidence, not a hard
+            # engineering constraint or an automatically confirmed match.
+            linked_dimensions = dimension_evidence_by_geometry.get(gi, [])
+            best_dimension = None
+            best_dimension_score = -1.0
+            for dim_evidence in linked_dimensions:
+                kind = dim_evidence["kind"]
+                dim_value = dim_evidence["value"]
+                dim_valid = dim_evidence["value_valid"]
+                expected_text_value = (
+                    diameter_value if measurement["has_diameter_symbol"]
+                    else radius_value if measurement["has_radius_symbol"]
+                    else None
+                )
+                kind_compatible = (
+                    measurement["has_diameter_symbol"] and kind == "DIAMETRIC"
+                ) or (
+                    measurement["has_radius_symbol"] and kind == "RADIUS"
+                )
+                if expected_text_value is not None and dim_valid:
+                    agreement = math.exp(
+                        -abs(dim_value - expected_text_value)
+                        / max(abs(dim_value), abs(expected_text_value), scale_safe * 0.01, 1e-9)
+                    )
+                else:
+                    agreement = 0.0
+                score = (
+                    (1.0 if kind_compatible else 0.0) * 0.55
+                    + agreement * 0.35
+                    + (1.0 if dim_valid else 0.0) * 0.05
+                    + math.exp(-dim_evidence["distance"] / max(dimension_tolerance, 1e-9)) * 0.05
+                )
+                if score > best_dimension_score:
+                    best_dimension_score = score
+                    best_dimension = (dim_evidence, kind_compatible, agreement)
+
+            if best_dimension is None:
+                has_dim_diametric = has_dim_radius = dim_value_valid = 0.0
+                dim_value_norm = dim_agreement = dim_distance_norm = 0.0
+                has_dimension_evidence = has_compatible_dimension = 0.0
+            else:
+                dim_evidence, kind_compatible, agreement = best_dimension
+                has_dim_diametric = float(dim_evidence["kind"] == "DIAMETRIC")
+                has_dim_radius = float(dim_evidence["kind"] == "RADIUS")
+                dim_value_valid = float(dim_evidence["value_valid"])
+                dim_value_norm = dim_evidence["value"] / scale_safe if dim_evidence["value_valid"] else 0.0
+                dim_agreement = agreement
+                dim_distance_norm = dim_evidence["distance"] / scale_safe
+                has_dimension_evidence = 1.0
+                has_compatible_dimension = float(kind_compatible)
+
+            geometry_type_vector = [
+                1.0 if geometry_type == item else 0.0
+                for item in GEOMETRY_TYPES
+            ]
+            entity_type_vector = [
+                float(entity_type == "CIRCLE"),
+                float(entity_type == "ARC"),
+                float(entity_type == "ELLIPSE"),
+            ]
+            aspect_ratio = min(
+                span_x, span_y
+            ) / max(max(span_x, span_y), 1e-9)
+            try:
+                area = float(geom.area)
+                perimeter = float(geom.length)
+                circularity = (
+                    4.0 * math.pi * area / max(perimeter * perimeter, 1e-9)
+                    if area > 0.0 and perimeter > 0.0 else 0.0
+                )
+            except Exception:
+                circularity = 0.0
+
             edge_attrs = [
                 bbox_distance / scale_safe,
                 text_center_distance / scale_safe,
                 center_distance / scale_safe if math.isfinite(center_distance) else 0.0,
-                distance / scale_safe, proximity, semantic_score,
+                combined_distance / scale_safe,
+                proximity, semantic_score,
                 float(measurement["has_diameter_symbol"]),
                 float(measurement["has_radius_symbol"]),
-                float(diameter_value is not None), float(diameter_value or 0.0) / scale_safe,
-                float(radius_value is not None), float(radius_value or 0.0) / scale_safe,
+                float(diameter_value is not None),
+                float(diameter_value or 0.0) / scale_safe,
+                float(radius_value is not None),
+                float(radius_value or 0.0) / scale_safe,
                 float(entity_type in {"CIRCLE", "ARC"}),
                 float(bool(_get(element, "is_closed", False))),
                 diameter_fit, radius_fit,
+                *geometry_type_vector,
+                *entity_type_vector,
+                aspect_ratio,
+                geom_span / scale_safe,
+                max(0.0, min(1.0, circularity)),
+                has_dim_diametric,
+                has_dim_radius,
+                dim_value_valid,
+                dim_value_norm,
+                dim_agreement,
+                dim_distance_norm,
+                has_dimension_evidence,
+                has_compatible_dimension,
             ]
-            bbox_norm = min(bbox_distance / max(text_tolerance, 1e-9), 2.0)
-            center_norm = min(text_center_distance / max(text_tolerance, 1e-9), 2.0)
-            centroid_norm = min(center_distance / max(text_tolerance, 1e-9), 2.0) if math.isfinite(center_distance) else 2.0
-            spatial_rank = 0.45 * bbox_norm + 0.35 * center_norm + 0.20 * centroid_norm
-            combined_rank = 0.70 * spatial_rank + 0.30 * (1.0 - semantic_score)
-            candidates.append((combined_rank, distance, -semantic_score, gi, edge_attrs))
-        # Semantic compatibility participates in candidate ranking, rather
-        # than being considered only after a nearest-neighbour shortlist.
+            combined_rank = (
+                spatial_rank_weight * spatial_rank
+                + semantic_rank_weight * (1.0 - semantic_score)
+            )
+            candidates.append(
+                (combined_rank, combined_distance, -semantic_score, gi, edge_attrs)
+            )
+
+        # Semantic compatibility is applied before top-k truncation. A
+        # semantically suitable circle/closed profile can outrank a nearer
+        # but incompatible line or annotation-like shape.
         candidates.sort(key=lambda item: (item[0], item[1], item[2]))
         for _, _, _, gi, edge_attrs in candidates[:max_neighbors]:
-            _add_edge(edge_store, ("text", relation, "geometry"), ti, gi, edge_attrs)
+            _add_edge(
+                edge_store, ("text", relation, "geometry"), ti, gi, edge_attrs
+            )
 
     # --------------------------------------------------------------
     # Text -> dimension candidates. This gives dimension values and GD&T
@@ -1426,10 +1615,10 @@ def build_semantic_graph(
         ("dimension", "measures_from", "anchor"): 2,
         ("dimension", "measures_to", "anchor"): 2,
         ("text", "describes", "geometry"): 2,
-        ("text", "dimension_value_candidate", "geometry"): 16,
-        ("text", "part_label_candidate", "geometry"): 16,
-        ("text", "geometry_description_candidate", "geometry"): 16,
-        ("text", "gdt_candidate", "geometry"): 16,
+        ("text", "dimension_value_candidate", "geometry"): 38,
+        ("text", "part_label_candidate", "geometry"): 38,
+        ("text", "geometry_description_candidate", "geometry"): 38,
+        ("text", "gdt_candidate", "geometry"): 38,
         ("text", "labels", "dimension"): 9,
         ("dimension", "near", "dimension"): 5,
         ("dimension", "parallel", "dimension"): 5,
@@ -1475,8 +1664,10 @@ def build_semantic_graph(
 
     data.graph_metadata = {
         "graph_type": "dxf_semantic_heterogeneous",
-        "feature_version": 5,
+        "feature_version": 6,
         "text_semantics_config": str(text_config_path or "text_semantics.json"),
+        "text_semantics_config_version": int(text_config.get("version", 1)),
+        "text_candidate_ranking": ranking,
         "text_semantics_categories": {
             category: int(sum(value == category for value in text_semantics))
             for category in sorted(set(text_semantics))
@@ -1489,6 +1680,13 @@ def build_semantic_graph(
             "radius_value_valid", "radius_value", "geometry_is_circle_or_arc",
             "geometry_is_closed", "diameter_to_geometry_bbox_relative_error",
             "radius_to_geometry_bbox_relative_error",
+            "geometry_type_one_hot_8", "entity_circle_arc_ellipse_one_hot_3",
+            "geometry_bbox_aspect_ratio", "geometry_bbox_max_span",
+            "geometry_circularity", "linked_diametric_dimension",
+            "linked_radius_dimension", "linked_dimension_value_valid",
+            "linked_dimension_value", "text_dimension_value_agreement",
+            "linked_dimension_distance", "has_linked_dimension",
+            "has_semantically_compatible_dimension",
         ],
         "dimension_geometry_edge_features": [
             "normalized_distance", "proximity", "is_diametric", "is_radius",
