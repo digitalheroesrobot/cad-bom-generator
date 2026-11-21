@@ -4,7 +4,7 @@ import csv
 import json
 import math
 from pathlib import Path
-import torch
+import torch\n\nfrom .geometry_features import GEOMETRY_FEATURE_NAMES
 
 
 def _read_label_rows(path: str | Path):
@@ -212,6 +212,13 @@ def build_training_file(
     data = torch.load(graph_path, map_location="cpu", weights_only=False)
     if data.graph_metadata.get("feature_version") != 7:
         raise ValueError("Rebuild the semantic graph with feature_version=7.")
+    if (
+        data.graph_metadata.get("geometry_feature_schema") != "dxf_geometry_shape_v7"
+        or data.graph_metadata.get("geometry_feature_names") != list(GEOMETRY_FEATURE_NAMES)
+        or data.graph_metadata.get("geometry_feature_dimension") != 24 + len(GEOMETRY_FEATURE_NAMES)
+        or data["geometry"].x.size(-1) != 24 + len(GEOMETRY_FEATURE_NAMES)
+    ):
+        raise ValueError("Graph geometry feature schema/order is invalid; rebuild the v7 graph.")
 
     handle_labels = load_handle_labels(labels_path)
     class_to_id = load_class_mapping(classes_path) if classes_path else {}
