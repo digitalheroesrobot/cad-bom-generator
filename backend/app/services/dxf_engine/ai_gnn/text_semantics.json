@@ -8,22 +8,68 @@
       "ignore_case": true,
       "comment": "Example only: remove this rule unless ?10 really means I10 in your drawings."
     },
-    {"pattern": "%%C", "replacement": "Ø", "ignore_case": true}
+    {
+      "pattern": "%%C",
+      "replacement": "Ø",
+      "ignore_case": true
+    }
   ],
-  "chinese_tokenization": {"use_jieba": true, "minimum_word_length": 1},
+  "chinese_tokenization": {
+    "use_jieba": true,
+    "minimum_word_length": 1
+  },
   "category_patterns": {
-    "ANNOTATION": ["(?:kN\\s*/\\s*m|MPa|施工|安装|焊接|注意|说明|备注|不得|必须|按图|均布荷载|荷载|承载力)"],
-    "TOLERANCE_GDT": ["(?:±|\\+/-|\\bPOSITION\\b|\\bFLATNESS\\b|\\bPERPENDICULARITY\\b|\\bPARALLELISM\\b|\\bRUNOUT\\b|\\bGD\\s*&\\s*T\\b)"],
-    "DIMENSION_VALUE": ["(?:%%C|[Ø⌀Φφ])\\s*[0-9]+(?:\\.[0-9]+)?", "\\bR\\s*[0-9]+(?:\\.[0-9]+)?", "(?:^|\\s)[0-9]+(?:\\.[0-9]+)?(?:\\s*mm)?(?:$|\\s)"],
-    "PART_LABEL": ["\\b(?:PL|PLATE|BEAM|COLUMN|BOLT|WELD|STEEL|BRACKET|H[0-9]+(?:X[0-9]+)*)\\b", "\\b[A-Z]{1,5}[-_][A-Z0-9-]+\\b", "\\b[0-9]+#?[A-Z0-9-]*\\b"],
-    "GEOMETRY_DESCRIPTION": ["(?:孔|圆孔|长圆孔|槽|倒角|圆角|中心线|切口|开口|孔径|直径|半径|厚度|宽度|高度|长度)"]
+    "ANNOTATION": [
+      "(?:kN\\s*/\\s*m|MPa|施工|安装|焊接|注意|说明|备注|不得|必须|按图|均布荷载|荷载|承载力)"
+    ],
+    "TOLERANCE_GDT": [
+      "(?:±|\\+/-|\\bPOSITION\\b|\\bFLATNESS\\b|\\bPERPENDICULARITY\\b|\\bPARALLELISM\\b|\\bRUNOUT\\b|\\bGD\\s*&\\s*T\\b)"
+    ],
+    "DIMENSION_VALUE": [
+      "(?:%%C|[Ø⌀Φφ])\\s*[0-9]+(?:\\.[0-9]+)?",
+      "\\bR\\s*[0-9]+(?:\\.[0-9]+)?",
+      "(?:^|\\s)[0-9]+(?:\\.[0-9]+)?(?:\\s*mm)?(?:$|\\s)"
+    ],
+    "PART_LABEL": [
+      "\\b(?:PL|PLATE|BEAM|COLUMN|BOLT|WELD|STEEL|BRACKET|H[0-9]+(?:X[0-9]+)*|I[0-9]+)\\b",
+      "\\b[A-Z]{1,5}[-_][A-Z0-9-]+\\b",
+      "(?:^|\\s)[0-9]+#[A-Z0-9?_-]+"
+    ],
+    "GEOMETRY_DESCRIPTION": [
+      "(?:孔|圆孔|长圆孔|槽|倒角|圆角|中心线|切口|开口|孔径|直径|半径|厚度|宽度|高度|长度)"
+    ]
   },
   "diameter_pattern": "(?:%%C|[Ø⌀ØΦφ])\\s*([0-9]+(?:\\.[0-9]+)?)",
   "radius_pattern": "\\bR\\s*([0-9]+(?:\\.[0-9]+)?)",
   "semantic_compatibility": {
-    "DIMENSION_VALUE": ["CIRCLE", "ARC", "ELLIPSE", "LWPOLYLINE", "POLYLINE"],
-    "PART_LABEL": ["INSERT", "LWPOLYLINE", "POLYLINE", "HATCH", "SOLID"],
-    "GEOMETRY_DESCRIPTION": ["CIRCLE", "ARC", "LINE", "LWPOLYLINE", "POLYLINE", "ELLIPSE"],
-    "TOLERANCE_GDT": ["CIRCLE", "ARC", "LINE", "LWPOLYLINE", "POLYLINE"]
+    "DIMENSION_VALUE": [
+      "CIRCLE",
+      "ARC",
+      "ELLIPSE",
+      "LWPOLYLINE",
+      "POLYLINE"
+    ],
+    "PART_LABEL": [
+      "INSERT",
+      "LWPOLYLINE",
+      "POLYLINE",
+      "HATCH",
+      "SOLID"
+    ],
+    "GEOMETRY_DESCRIPTION": [
+      "CIRCLE",
+      "ARC",
+      "LINE",
+      "LWPOLYLINE",
+      "POLYLINE",
+      "ELLIPSE"
+    ],
+    "TOLERANCE_GDT": [
+      "CIRCLE",
+      "ARC",
+      "LINE",
+      "LWPOLYLINE",
+      "POLYLINE"
+    ]
   }
 }
