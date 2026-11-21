@@ -1,8 +1,11 @@
 import math
 
-from shapely.geometry import Point
+from shapely.geometry import LineString, Point
 
-from app.services.dxf_engine.ai_gnn.graph_builder import build_semantic_graph
+from app.services.dxf_engine.ai_gnn.graph_builder import (
+    _collinear_score,
+    build_semantic_graph,
+)
 from app.services.dxf_engine.ai_gnn.text_semantics import (
     classify_text,
     load_text_config,
@@ -119,3 +122,25 @@ def test_annotation_is_retained_but_never_links_to_geometry_or_dimension():
         if edge_type[0] == "text":
             edge_index = graph[edge_type].edge_index
             assert not bool((edge_index[0] == 1).any())
+
+
+def test_collinear_tolerance_is_independent_and_curvature_is_not_assumed():
+    first = LineString([(0, 0), (100, 0)])
+    second = LineString([(0, 5), (100, 5)])
+    direction = (1.0, 0.0)
+    assert math.isclose(
+        _collinear_score(first, second, direction, direction, 10.0),
+        0.5,
+        rel_tol=1e-6,
+    )
+    assert _collinear_score(
+        first, second, direction, direction, 2.0
+    ) == 0.0
+
+    # A bent polyline has no single representative direction, so it must not
+    # be forced into a straight-line collinearity score. Its local tangent and
+    # curvature evidence is represented by geometry anchors/edge attributes.
+    bent = LineString([(0, 0), (50, 0), (50, 50)])
+    assert _collinear_score(
+        bent, second, None, direction, 10.0
+    ) == 0.0
