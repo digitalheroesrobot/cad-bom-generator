@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import torch
 
-from .model import DXFSemanticGNN
+from .geometry_features import GEOMETRY_FEATURE_NAMES\nfrom .model import DXFSemanticGNN
 
 
 def _optional_float(values, index):
@@ -108,6 +108,17 @@ def predict_geometry(data, checkpoint_path: str, device: str | None = None):
         raise ValueError(
             "GNN feature version mismatch; rebuild graph and retrain checkpoint."
         )
+    if checkpoint.get("feature_version") == 7:
+        expected_names = list(GEOMETRY_FEATURE_NAMES)
+        if (
+            data.graph_metadata.get("geometry_feature_schema") != "dxf_geometry_shape_v7"
+            or data.graph_metadata.get("geometry_feature_names") != expected_names
+            or checkpoint.get("geometry_feature_schema") != "dxf_geometry_shape_v7"
+            or checkpoint.get("geometry_feature_names") != expected_names
+        ):
+            raise ValueError(
+                "GNN geometry feature schema/order mismatch; rebuild graph and retrain checkpoint."
+            )
     # Relation modules are named by their position in metadata.edge_types.
     # PyG may expose the same edge types in a different order when a new graph
     # is built, so recreate the training-time order from the checkpoint's
