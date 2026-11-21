@@ -1213,6 +1213,19 @@ def build_semantic_graph(
                 continue
             proximity = max(0.0, 1.0 - distance / max(text_tolerance, 1e-9))
             diameter_value, radius_value = measurement["diameter_value"], measurement["radius_value"]
+            geom_bounds = _bounds(geom)
+            geom_span = max(
+                (geom_bounds[2] - geom_bounds[0], geom_bounds[3] - geom_bounds[1])
+                if geom_bounds else (0.0, 0.0)
+            )
+            diameter_fit = (
+                abs(diameter_value - geom_span) / max(abs(diameter_value), abs(geom_span), 1e-9)
+                if diameter_value is not None else 0.0
+            )
+            radius_fit = (
+                abs(2.0 * radius_value - geom_span) / max(2.0 * abs(radius_value), abs(geom_span), 1e-9)
+                if radius_value is not None else 0.0
+            )
             edge_attrs = [
                 bbox_distance / scale_safe,
                 text_center_distance / scale_safe,
@@ -1224,6 +1237,7 @@ def build_semantic_graph(
                 float(radius_value is not None), float(radius_value or 0.0) / scale_safe,
                 float(entity_type in {"CIRCLE", "ARC"}),
                 float(bool(_get(element, "is_closed", False))),
+                diameter_fit, radius_fit,
             ]
             bbox_norm = min(bbox_distance / max(text_tolerance, 1e-9), 2.0)
             center_norm = min(text_center_distance / max(text_tolerance, 1e-9), 2.0)
@@ -1407,10 +1421,10 @@ def build_semantic_graph(
         ("dimension", "measures_from", "anchor"): 2,
         ("dimension", "measures_to", "anchor"): 2,
         ("text", "describes", "geometry"): 2,
-        ("text", "dimension_value_candidate", "geometry"): 14,
-        ("text", "part_label_candidate", "geometry"): 14,
-        ("text", "geometry_description_candidate", "geometry"): 14,
-        ("text", "gdt_candidate", "geometry"): 14,
+        ("text", "dimension_value_candidate", "geometry"): 16,
+        ("text", "part_label_candidate", "geometry"): 16,
+        ("text", "geometry_description_candidate", "geometry"): 16,
+        ("text", "gdt_candidate", "geometry"): 16,
         ("text", "labels", "dimension"): 9,
         ("dimension", "near", "dimension"): 5,
         ("dimension", "parallel", "dimension"): 5,
