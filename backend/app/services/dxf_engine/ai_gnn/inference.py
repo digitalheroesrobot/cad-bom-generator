@@ -170,6 +170,10 @@ def predict_geometry(data, checkpoint_path: str, device: str | None = None):
     dimension_values = getattr(data["dimension"], "display_value", [])
     dimension_actual_values = getattr(data["dimension"], "actual_value", [])
     text_contents = getattr(data["text"], "content", [])
+    text_normalized = getattr(data["text"], "normalized_content", text_contents)
+    text_semantics = getattr(data["text"], "semantic_type", ["UNKNOWN"] * len(text_handles))
+    text_diameter_values = getattr(data["text"], "diameter_value", [])
+    text_radius_values = getattr(data["text"], "radius_value", [])
     analytic_lengths = getattr(data["geometry"], "measured_length", [])
     analytic_areas = getattr(data["geometry"], "measured_area", [])
     analytic_radii = getattr(data["geometry"], "radius_measured", [])
@@ -195,6 +199,11 @@ def predict_geometry(data, checkpoint_path: str, device: str | None = None):
                         "content": str(text_contents[text_index]) if text_index < len(text_contents) else "",
                         "normalized_distance": text_attrs[0] if len(text_attrs) > 0 else None,
                         "candidate_confidence": text_attrs[1] if len(text_attrs) > 1 else None,
+                        "semantic_compatibility": text_attrs[2] if len(text_attrs) > 2 else None,
+                        "has_diameter_symbol": bool(text_attrs[3]) if len(text_attrs) > 3 else False,
+                        "has_radius_symbol": bool(text_attrs[4]) if len(text_attrs) > 4 else False,
+                        "diameter_value": _optional_float(text_attrs, 6) if len(text_attrs) > 6 else None,
+                        "radius_value": _optional_float(text_attrs, 8) if len(text_attrs) > 8 else None,
                     })
                 record = {
                     "dimension_handle": str(dimension_handles[dimension_index]),
@@ -209,6 +218,18 @@ def predict_geometry(data, checkpoint_path: str, device: str | None = None):
                     "actual_value": _optional_float(dimension_actual_values, dimension_index),
                     "normalized_distance": attrs[0] if len(attrs) > 0 else None,
                     "candidate_confidence": attrs[1] if len(attrs) > 1 else None,
+                    "dimension_evidence": {
+                        "is_diametric": bool(attrs[2]) if len(attrs) > 2 else False,
+                        "is_radius": bool(attrs[3]) if len(attrs) > 3 else False,
+                        "is_linear": bool(attrs[4]) if len(attrs) > 4 else False,
+                        "is_angular": bool(attrs[5]) if len(attrs) > 5 else False,
+                        "display_value_valid": bool(attrs[6]) if len(attrs) > 6 else False,
+                        "display_value_normalized": attrs[7] if len(attrs) > 7 else None,
+                        "actual_value_valid": bool(attrs[8]) if len(attrs) > 8 else False,
+                        "actual_value_normalized": attrs[9] if len(attrs) > 9 else None,
+                        "geometry_is_circle_or_arc": bool(attrs[10]) if len(attrs) > 10 else False,
+                        "geometry_is_closed": bool(attrs[11]) if len(attrs) > 11 else False,
+                    },
                     "related_dimensions": _related_dimensions(data, dimension_index),
                 }
                 dimension_candidates.append(record)
@@ -219,18 +240,31 @@ def predict_geometry(data, checkpoint_path: str, device: str | None = None):
             unique_dimensions[key] = item
 
         text_candidates = []
-        for text_index, attrs in _edge_candidates(
-            data, ("text", "describes", "geometry"), geometry_index
-        ):
-            text_candidates.append({
-                "text_handle": str(text_handles[text_index]),
-                "content": (
-                    str(text_contents[text_index])
-                    if text_index < len(text_contents) else ""
-                ),
-                "normalized_distance": attrs[0] if len(attrs) > 0 else None,
-                "candidate_confidence": attrs[1] if len(attrs) > 1 else None,
-            })
+        text_relations = (
+            "dimension_value_candidate", "part_label_candidate",
+            "geometry_description_candidate", "gdt_candidate", "describes",
+        )
+        for text_relation in text_relations:
+            for text_index, attrs in _edge_candidates(
+                data, ("text", text_relation, "geometry"), geometry_index
+            ):
+                text_candidates.append({
+                    "text_handle": str(text_handles[text_index]),
+                    "content": str(text_contents[text_index]) if text_index < len(text_contents) else "",
+                    "normalized_content": str(text_normalized[text_index]) if text_index < len(text_normalized) else "",
+                    "semantic_type": str(text_semantics[text_index]) if text_index < len(text_semantics) else "UNKNOWN",
+                    "relation": text_relation,
+                    "bbox_distance": attrs[0] if len(attrs) > 0 else None,
+                    "text_center_geometry_distance": attrs[1] if len(attrs) > 1 else None,
+                    "text_center_geometry_center_distance": attrs[2] if len(attrs) > 2 else None,
+                    "normalized_distance": attrs[3] if len(attrs) > 3 else (attrs[0] if attrs else None),
+                    "candidate_confidence": attrs[4] if len(attrs) > 4 else (attrs[1] if len(attrs) > 1 else None),
+                    "semantic_compatibility": attrs[5] if len(attrs) > 5 else None,
+                    "has_diameter_symbol": bool(attrs[6]) if len(attrs) > 6 else False,
+                    "has_radius_symbol": bool(attrs[7]) if len(attrs) > 7 else False,
+                    "diameter_value": _optional_float(attrs, 9),
+                    "radius_value": _optional_float(attrs, 11),
+                })
 
         predicted = torch.expm1(
             measurement_log[geometry_index].clamp(min=0.0, max=30.0)
