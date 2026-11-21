@@ -9,6 +9,11 @@ from typing import Any
 from shapely.geometry import Point, LineString
 from shapely.ops import nearest_points
 
+from .text_semantics import (
+    classify_text, load_text_config, normalize_text, parse_measurement_evidence,
+    tokenize_text,
+)
+
 
 # GeometryElement.geometry_type is assigned by geometry/entity_converter.py.
 # Keep eight one-hot slots; the 24th feature is the permitted radius descriptor,
@@ -173,35 +178,31 @@ def _dimension_feature(dimension, scale: float, origin):
     ]
 
 
-def _text_feature(text, scale: float, origin, lexical_size: int = 32):
+def _text_feature(text, scale: float, origin, lexical_size: int = 32, text_config=None):
     content = str(_get(text, "text", "") or "")
+    config = text_config or {}
+    normalized = normalize_text(content, config)
     position = _xy(_get(text, "position")) or _xy(_get(text, "position_moved"))
     if position is None:
         position = (0.0, 0.0)
     bound = _get(text, "bound") or _get(text, "bound_moved")
     bounds = _bounds(bound)
-    if bounds:
-        width, height = bounds[2] - bounds[0], bounds[3] - bounds[1]
-    else:
-        width = height = 0.0
+    width, height = (bounds[2] - bounds[0], bounds[3] - bounds[1]) if bounds else (0.0, 0.0)
     scale = max(abs(scale), 1e-9)
     ox, oy = origin
-    tokens = re.findall(r"[A-Za-z]+|[0-9]+(?:\.[0-9]+)?|[^\w\s]", content.lower())
     lexical = [0.0] * lexical_size
-    for token in tokens:
+    for token in tokenize_text(normalized, config):
         lexical[_hash_bucket(token, lexical_size)] += 1.0
     norm = max(1.0, math.sqrt(sum(v * v for v in lexical)))
     lexical = [v / norm for v in lexical]
-    angle = _safe_float(_get(text, "angle", 0.0))
+    evidence = parse_measurement_evidence(normalized, config)
     return [
-        (position[0] - ox) / scale,
-        (position[1] - oy) / scale,
-        width / scale, height / scale,
-        angle,
-        math.log1p(len(content)),
-        math.log1p(sum(ch.isdigit() for ch in content)),
-        float(bool(re.search(r"[Ø⌀φΦ]", content))),
-        float(bool(re.search(r"\b(PL|PLATE|BEAM|COLUMN|BOLT|WELD|STEEL|H\d+)\b", content, re.I))),
+        (position[0] - ox) / scale, (position[1] - oy) / scale,
+        width / scale, height / scale, _safe_float(_get(text, "angle", 0.0)),
+        math.log1p(len(normalized)),
+        math.log1p(sum(ch.isdigit() for ch in normalized)),
+        float(evidence["has_diameter_symbol"]),
+        float(bool(re.search(r"\b(PL|PLATE|BEAM|COLUMN|BOLT|WELD|STEEL|BRACKET|H\d+)\b", normalized, re.I))),
         *lexical,
     ]
 
@@ -345,52 +346,68 @@ def _intersection_point_coords(geometry):
     return []
 
 
+def _unit_direction(a, b):
+    dx, dy = float(b[0]) - float(a[0]), float(b[1]) - float(a[1])
+    length = math.hypot(dx, dy)
+    return (dx / length, dy / length) if length > 1e-9 else (0.0, 0.0)
+
+
+def _local_curvature_summary(geometry):
+    values = []
+    for part in _line_parts(geometry):
+        coords = [(float(p[0]), float(p[1])) for p in part.coords]
+        for index in range(1, len(coords) - 1):
+            incoming = _unit_direction(coords[index - 1], coords[index])
+            outgoing = _unit_direction(coords[index], coords[index + 1])
+            dot = max(-1.0, min(1.0, incoming[0] * outgoing[0] + incoming[1] * outgoing[1]))
+            cross = incoming[0] * outgoing[1] - incoming[1] * outgoing[0]
+            length = 0.5 * (math.dist(coords[index - 1], coords[index]) + math.dist(coords[index], coords[index + 1]))
+            if length > 1e-9:
+                values.append(math.atan2(cross, dot) / length)
+    if not values:
+        return None
+    values.sort()
+    return values[len(values) // 2]
+
+
 def _anchor_specs(element):
-    """Create a small, deterministic set of meaningful anchors per geometry."""
+    """Create anchors with local tangent and signed discrete curvature."""
     geom = _get(element, "geometry_2d")
     if geom is None or geom.is_empty:
         return []
     specs = []
     entity_type = str(_get(_get(element, "source"), "entity_type", "")).upper()
-
     center = _xy(_get(element, "center"))
     if center is None:
-        try:
-            c = geom.centroid
-            center = (float(c.x), float(c.y))
-        except Exception:
-            center = None
-    if center is not None and entity_type in {"CIRCLE", "ARC"}:
-        specs.append((center, "CENTER", (0.0, 0.0), 0.0))
-
-    # A flattened CIRCLE is represented as a polygon for geometric predicates.
-    # Its approximation vertices are not useful semantic anchors.
+        c = geom.centroid
+        center = (float(c.x), float(c.y))
+    if entity_type in {"CIRCLE", "ARC"}:
+        radius = _get(element, "radius")
+        curvature = 1.0 / max(abs(_safe_float(radius)), 1e-9) if radius is not None else 0.0
+        specs.append((center, "CENTER", (0.0, 0.0), curvature))
     if entity_type == "CIRCLE":
         return specs
-
-    segments = _segment_records(geom)
     if geom.geom_type == "Point":
-        c = _xy(geom)
-        if c:
-            specs.append((c, "CENTER", (0.0, 0.0), 0.0))
-    else:
-        for part in _line_parts(geom):
-            coords = list(part.coords)
-            if len(coords) >= 2:
-                first = coords[0]
-                last = coords[-1]
-                specs.append(((float(first[0]), float(first[1])), "START",
-                              segments[0]["direction"] if segments else (0.0, 0.0), 0.0))
-                specs.append(((float(last[0]), float(last[1])), "END",
-                              segments[-1]["direction"] if segments else (0.0, 0.0), 0.0))
-                # Interior vertices are useful for polyline and polygon corners.
-                for vertex in coords[1:-1]:
-                    specs.append(((float(vertex[0]), float(vertex[1])), "VERTEX",
-                                  (0.0, 0.0), 0.0))
-
-    # Remove duplicate coordinates while retaining the first semantic kind.
-    unique = []
-    seen = set()
+        p = _xy(geom)
+        return [(p, "CENTER", (0.0, 0.0), 0.0)] if p else specs
+    for part in _line_parts(geom):
+        coords = [(float(p[0]), float(p[1])) for p in part.coords]
+        if len(coords) < 2:
+            continue
+        specs.append((coords[0], "START", _unit_direction(coords[0], coords[1]), 0.0))
+        specs.append((coords[-1], "END", _unit_direction(coords[-2], coords[-1]), 0.0))
+        for index in range(1, len(coords) - 1):
+            incoming = _unit_direction(coords[index - 1], coords[index])
+            outgoing = _unit_direction(coords[index], coords[index + 1])
+            dot = max(-1.0, min(1.0, incoming[0] * outgoing[0] + incoming[1] * outgoing[1]))
+            cross = incoming[0] * outgoing[1] - incoming[1] * outgoing[0]
+            turn = math.atan2(cross, dot)
+            length = 0.5 * (math.dist(coords[index - 1], coords[index]) + math.dist(coords[index], coords[index + 1]))
+            tangent_sum = (incoming[0] + outgoing[0], incoming[1] + outgoing[1])
+            tangent_norm = math.hypot(*tangent_sum)
+            tangent = (tangent_sum[0] / tangent_norm, tangent_sum[1] / tangent_norm) if tangent_norm > 1e-9 else outgoing
+            specs.append((coords[index], "VERTEX", tangent, turn / max(length, 1e-9)))
+    unique, seen = [], set()
     for coord, kind, tangent, curvature in specs:
         key = (round(coord[0], 8), round(coord[1], 8))
         if key not in seen:
@@ -419,7 +436,9 @@ def _anchor_feature(coord, kind, tangent, curvature, scale, origin, center):
 
 
 def _make_relation_attrs(distance, angle_diff, intersection_length,
-                         endpoint_distance, overlap_ratio, confidence, scale):
+                         endpoint_distance, overlap_ratio, confidence, scale,
+                         tangent_continuity=0.0, curvature_similarity=0.0,
+                         collinear_score=0.0):
     scale = max(abs(scale), 1e-9)
     return [
         _safe_float(distance) / scale,
@@ -429,6 +448,9 @@ def _make_relation_attrs(distance, angle_diff, intersection_length,
         _safe_float(overlap_ratio),
         max(0.0, min(1.0, _safe_float(confidence))),
         float(endpoint_distance is not None and math.isfinite(_safe_float(endpoint_distance, float("nan")))),
+        max(0.0, min(1.0, _safe_float(tangent_continuity))),
+        max(0.0, min(1.0, _safe_float(curvature_similarity))),
+        max(0.0, min(1.0, _safe_float(collinear_score))),
     ]
 
 
@@ -446,6 +468,10 @@ def build_semantic_graph(
     max_neighbors: int = 16,
     connection_tolerance: float = 200.0,
     angular_tolerance_degrees: float = 3.0,
+    collinear_tolerance: float = 20.0,
+    tangent_tolerance_degrees: float = 12.0,
+    curvature_tolerance: float = 0.02,
+    text_config_path: str | None = None,
 ):
     """Build a DXF engineering HeteroData graph.
 
@@ -471,6 +497,7 @@ def build_semantic_graph(
     geometry_elements = list(geometry_elements or [])
     dimension_elements = list(dimension_elements or [])
     text_elements = list(text_elements or [])
+    text_config = load_text_config(text_config_path)
 
     # Prefer rich TextElement instances, then include extracted raw MTEXT,
     # ATTRIB and ATTDEF records not represented by those objects.
@@ -519,7 +546,7 @@ def build_semantic_graph(
         [_dimension_feature(x, scale_safe, origin) for x in dimension_elements], 17
     )
     data["text"].x = feature_tensor(
-        [_text_feature(x, scale_safe, origin) for x in text_elements], 41
+        [_text_feature(x, scale_safe, origin, text_config=text_config) for x in text_elements], 41
     )
 
     # Preserve traceability and expose exact deterministic geometry values.
@@ -658,6 +685,7 @@ def build_semantic_graph(
             )
 
     angular_tol = math.radians(max(0.0, angular_tolerance_degrees))
+    tangent_tol = math.radians(max(0.0, tangent_tolerance_degrees))
     pair_seen = set()
 
     for i, a in enumerate(geometry_elements):
@@ -701,7 +729,7 @@ def build_semantic_graph(
                 default=float("inf"),
             )
             collinear_score = _collinear_score(
-                ga, gb, dir_a, dir_b, spatial_tolerance
+                ga, gb, dir_a, dir_b, collinear_tolerance
             )
 
             relation_records = []
