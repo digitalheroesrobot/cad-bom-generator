@@ -116,7 +116,9 @@ def extract_geometry_descriptors(element, scale: float = 1.0) -> list[float]:
     """Return v7 shape descriptors with explicit availability indicators.
 
     Length-like values use drawing-units / scale. Perimeter and segment
-    statistics are boundary descriptors, not the supervised Length target.
+    statistics are recomputed from geometry_2d, never copied from the label
+    fields. If a project's Length label is defined as that exact boundary
+    perimeter, these descriptors will naturally be highly predictive.
     No analytic area or area-derived ratio is exposed to the model.
     """
     geometry = _get(element, "geometry_2d")
