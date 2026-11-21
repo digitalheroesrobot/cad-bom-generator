@@ -8,6 +8,7 @@ DEFAULT_CONFIG = Path(__file__).with_name("text_semantics.json")
 
 
 def load_text_config(path=None):
+    """Load drawing-specific CAD text rules without requiring an NLP package."""
     config_path = Path(path) if path else DEFAULT_CONFIG
     if not config_path.exists():
         return {}
@@ -19,24 +20,33 @@ def load_text_config(path=None):
 
 
 def normalize_text(content, config):
+    """Apply ordered, user-editable CAD/OCR substitutions from JSON."""
     value = str(content or "")
     for rule in config.get("replacements", []):
         if rule.get("enabled", True) is False:
             continue
         pattern = str(rule.get("pattern", ""))
-        if pattern:
-            flags = re.IGNORECASE if rule.get("ignore_case", False) else 0
-            value = re.sub(pattern, str(rule.get("replacement", "")), value, flags=flags)
+        if not pattern:
+            continue
+        flags = re.IGNORECASE if rule.get("ignore_case", False) else 0
+        value = re.sub(pattern, str(rule.get("replacement", "")), value, flags=flags)
     return value
 
 
 def tokenize_text(content, config):
+    """Tokenize Latin identifiers, CAD symbols, numbers, and Chinese text.
+
+    jieba is optional. If it is not installed, deterministic character bigrams
+    preserve useful Chinese subword evidence without adding a hard dependency.
+    """
     value = normalize_text(content, config).lower()
     tokens = re.findall(
-        r"%%c|[ø⌀φΦØ]|[a-z]+(?:[-_][a-z0-9]+)*|[0-9]+(?:\.[0-9]+)?|[\u3400-\u9fff]+|[^\w\s]",
+        r"%%c|%%d|%%p|[ø⌀φΦØ]|[a-z]+(?:[-_][a-z0-9]+)*|"
+        r"[0-9]+(?:\.[0-9]+)?|[\u3400-\u9fff]+|[^\w\s]",
         value, flags=re.IGNORECASE,
     )
     options = config.get("chinese_tokenization", {})
+    minimum_length = max(1, int(options.get("minimum_word_length", 1)))
     output = []
     for token in tokens:
         if re.search(r"[\u3400-\u9fff]", token):
@@ -44,7 +54,10 @@ def tokenize_text(content, config):
             if options.get("use_jieba", True):
                 try:
                     import jieba
-                    segmented = [part.strip() for part in jieba.cut(token) if part.strip()]
+                    segmented = [
+                        part.strip() for part in jieba.cut(token)
+                        if part.strip() and len(part.strip()) >= minimum_length
+                    ]
                 except ImportError:
                     pass
             if segmented:
@@ -52,17 +65,24 @@ def tokenize_text(content, config):
             elif len(token) == 1:
                 output.append(token)
             else:
-                output.extend(token[i:i + 2] for i in range(len(token) - 1))
-        else:
+                output.extend(
+                    token[i:i + 2]
+                    for i in range(len(token) - 1)
+                    if len(token[i:i + 2]) >= minimum_length
+                )
+        elif len(token) >= minimum_length or not token.isalnum():
             output.append(token)
     return output
 
 
 def classify_text(content, config):
+    """Classify text with conservative precedence for general annotations.
+
+    Annotation precedence is intentional: a load note containing a diameter,
+    force, or length must not become a geometry measurement relationship.
+    """
     normalized = normalize_text(content, config)
     patterns = config.get("category_patterns", {})
-    # Notes take precedence so loads/manufacturing instructions never become
-    # geometry evidence merely because they contain dimensions or numbers.
     for category in (
         "ANNOTATION", "TOLERANCE_GDT", "DIMENSION_VALUE",
         "PART_LABEL", "GEOMETRY_DESCRIPTION",
@@ -74,11 +94,15 @@ def classify_text(content, config):
 
 
 def parse_measurement_evidence(content, config):
+    """Extract diameter/radius values while retaining the normalized source."""
     normalized = normalize_text(content, config)
     diameter_pattern = config.get(
-        "diameter_pattern", r"(?:%%c|[ø⌀ØΦφ])\s*([0-9]+(?:\.[0-9]+)?)"
+        "diameter_pattern",
+        r"(?:%%c|[ø⌀ØΦφ])\s*([0-9]+(?:\.[0-9]+)?)",
     )
-    radius_pattern = config.get("radius_pattern", r"\bR\s*([0-9]+(?:\.[0-9]+)?)")
+    radius_pattern = config.get(
+        "radius_pattern", r"(?<![A-Z0-9])R\s*([0-9]+(?:\.[0-9]+)?)"
+    )
     diameter = re.search(diameter_pattern, normalized, flags=re.IGNORECASE)
     radius = re.search(radius_pattern, normalized, flags=re.IGNORECASE)
     return {
