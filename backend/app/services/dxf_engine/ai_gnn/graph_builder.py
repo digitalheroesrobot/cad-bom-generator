@@ -9,6 +9,8 @@ from typing import Any
 from shapely.geometry import Point, LineString
 from shapely.ops import nearest_points
 
+from .geometry_features import GEOMETRY_FEATURE_NAMES, extract_geometry_descriptors
+
 from .text_semantics import (
     classify_text, load_text_config, normalize_text, parse_measurement_evidence,
     tokenize_text,
@@ -96,12 +98,7 @@ def _line_parts(geometry):
 
 
 def _geometry_feature(element, scale: float, origin):
-    """Build 24 geometry inputs; length and area are intentionally excluded.
-
-    Radius is retained as the explicitly permitted geometric descriptor.
-    Ground-truth radius targets are stored separately and never copied from
-    this input inside the model.
-    """
+    """Build the v7 geometry vector; supervised measurements are excluded."""
     geometry = _get(element, "geometry_2d")
     bounds = _bounds(geometry)
     if bounds:
@@ -129,12 +126,12 @@ def _geometry_feature(element, scale: float, origin):
     entity_hash = [0.0] * 8
     entity_hash[_hash_bucket(entity_type, 8)] = 1.0
 
-    # Existing analytical length and area are deliberately NOT features.
-    # Do not feed the raw DXF radius value into the model: it is the desired
-    # supervised target and would leak the answer. Keep only availability.
+    # Raw DXF radius is excluded: it is the supervised radius target.
     radius_raw = _get(element, "radius")
-    radius_valid = radius_raw is not None and math.isfinite(_safe_float(radius_raw, float("nan")))
-    return [
+    radius_valid = radius_raw is not None and math.isfinite(
+        _safe_float(radius_raw, float("nan"))
+    )
+    base_features = [
         (cx - ox) / scale, (cy - oy) / scale,
         width / scale, height / scale,
         math.log1p(max(0.0, vertex_count)),
@@ -142,8 +139,7 @@ def _geometry_feature(element, scale: float, origin):
         float(bool(_get(element, "is_valid", True))),
         *type_vector, *entity_hash, float(radius_valid),
     ]
-
-
+    return base_features + extract_geometry_descriptors(element, scale)
 def _dimension_feature(dimension, scale: float, origin):
     """Build 17 dimension features, including endpoint direction and value-validity flags."""
     scale = max(abs(scale), 1e-9)
@@ -543,7 +539,7 @@ def build_semantic_graph(
         return torch.tensor(rows, dtype=torch.float).reshape(len(rows), width)
 
     data["geometry"].x = feature_tensor(
-        [_geometry_feature(x, scale_safe, origin) for x in geometry_elements], 24
+        [_geometry_feature(x, scale_safe, origin) for x in geometry_elements], 24 + len(GEOMETRY_FEATURE_NAMES)
     )
     data["dimension"].x = feature_tensor(
         [_dimension_feature(x, scale_safe, origin) for x in dimension_elements], 17
@@ -1714,7 +1710,10 @@ def build_semantic_graph(
 
     data.graph_metadata = {
         "graph_type": "dxf_semantic_heterogeneous",
-        "feature_version": 6,
+        "feature_version": 7,
+        "geometry_feature_schema": "dxf_geometry_shape_v7",
+        "geometry_feature_names": list(GEOMETRY_FEATURE_NAMES),
+        "geometry_feature_dimension": 24 + len(GEOMETRY_FEATURE_NAMES),
         "text_semantics_config": str(text_config_path or "text_semantics.json"),
         "text_semantics_config_version": int(text_config.get("version", 1)),
         "text_candidate_ranking": ranking,
