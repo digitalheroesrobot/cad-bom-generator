@@ -839,6 +839,30 @@ def build_semantic_graph(
             (src, dst, attrs) for (src, dst), attrs in dedup.items()
         ]
 
+    def dimension_geometry_attrs(distance, dimension, element):
+        kind = str(_get(dimension, "dimension_type", "UNKNOWN")).upper()
+        value, actual = _get(dimension, "length"), _get(dimension, "actual_length")
+        try:
+            value_valid = value is not None and math.isfinite(float(value))
+        except (TypeError, ValueError, OverflowError):
+            value_valid = False
+        try:
+            actual_valid = actual is not None and math.isfinite(float(actual))
+        except (TypeError, ValueError, OverflowError):
+            actual_valid = False
+        entity = str(_get(_get(element, "source"), "entity_type", "OTHER")).upper()
+        return [
+            distance / scale_safe,
+            max(0.0, 1.0 - distance / max(dimension_tolerance, 1e-9)),
+            float(kind == "DIAMETRIC"), float(kind == "RADIUS"),
+            float(kind in {"LINEAR", "ALIGNED", "ORDINATE"}),
+            float(kind in {"ANGULAR", "ANGULAR_3P"}),
+            float(value_valid), _safe_float(value) / scale_safe,
+            float(actual_valid), _safe_float(actual) / scale_safe,
+            float(entity in {"CIRCLE", "ARC"}),
+            float(bool(_get(element, "is_closed", False))),
+        ]
+
     # --------------------------------------------------------------
     # Phase 2: Geometry anchors and dimension measurement references
     # --------------------------------------------------------------
@@ -1013,7 +1037,7 @@ def build_semantic_graph(
             _add_edge(
                 edge_store, ("dimension", "describes", "geometry"),
                 di, gi,
-                [dist / scale_safe, max(0.0, 1.0 - dist / max(dimension_tolerance, 1e-9))],
+                dimension_geometry_attrs(dist, dimension, element),
             )
 
         # Role-specific association: each dimension definition point is
@@ -1074,7 +1098,7 @@ def build_semantic_graph(
             _add_edge(
                 edge_store, ("dimension", role, "geometry"),
                 di, gi,
-                [dist / scale_safe, max(0.0, 1.0 - dist / max(dimension_tolerance, 1e-9))],
+                dimension_geometry_attrs(dist, dimension, element),
             )
             _add_edge(
                 edge_store, ("geometry", "rev_" + role, "dimension"),
@@ -1372,9 +1396,9 @@ def build_semantic_graph(
         ("geometry", "equal_length_candidate", "geometry"): 3,
         ("geometry", "mirror_candidate", "geometry"): 5,
         ("geometry", "has_anchor", "anchor"): 2,
-        ("dimension", "describes", "geometry"): 2,
-        ("dimension", "measures_from", "geometry"): 2,
-        ("dimension", "measures_to", "geometry"): 2,
+        ("dimension", "describes", "geometry"): 12,
+        ("dimension", "measures_from", "geometry"): 12,
+        ("dimension", "measures_to", "geometry"): 12,
         ("dimension", "measures_from", "anchor"): 2,
         ("dimension", "measures_to", "anchor"): 2,
         ("text", "describes", "geometry"): 2,
