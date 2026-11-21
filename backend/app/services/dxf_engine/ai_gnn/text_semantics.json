@@ -52,7 +52,7 @@
   },
   "category_patterns": {
     "ANNOTATION": [
-      "(?:kN\\s*/\\s*m|kN/m|MPa|施工|安装|焊接|注意|说明|备注|不得|必须|按图|均布荷载|荷载|承载力|载荷|制造要求|加工要求|表面处理|热镀锌|喷漆)"
+      "(?:kN\\s*/\\s*m|kN/m|MPa|\\bNOTE\\b|\\bNOTES\\b|\\bINSTALL(?:ATION)?\\b|\\bWELDING\\b|\\bMANUFACTURING\\b|\\bDO NOT\\b|\\bMUST\\b|\\bSURFACE TREATMENT\\b|\\bHOT DIP GALVANIZED\\b|\\bUNIFORM LOAD\\b|施工|安装|焊接|注意|说明|备注|不得|必须|按图|均布荷载|荷载|承载力|载荷|制造要求|加工要求|表面处理|热镀锌|喷漆)"
     ],
     "TOLERANCE_GDT": [
       "(?:±|\\+/-|\\bPOSITION\\b|\\bFLATNESS\\b|\\bPERPENDICULARITY\\b|\\bPARALLELISM\\b|\\bRUNOUT\\b|\\bPROFILE\\b|\\bCONCENTRICITY\\b|\\bSYMMETRY\\b|\\bGD\\s*&\\s*T\\b)"
