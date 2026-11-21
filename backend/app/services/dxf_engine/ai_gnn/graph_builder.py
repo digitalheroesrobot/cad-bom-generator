@@ -182,6 +182,7 @@ def _text_feature(text, scale: float, origin, lexical_size: int = 32, text_confi
     content = str(_get(text, "text", "") or "")
     config = text_config or {}
     normalized = normalize_text(content, config)
+    semantic_category, _ = classify_text(normalized, config)
     position = _xy(_get(text, "position")) or _xy(_get(text, "position_moved"))
     if position is None:
         position = (0.0, 0.0)
@@ -202,7 +203,7 @@ def _text_feature(text, scale: float, origin, lexical_size: int = 32, text_confi
         math.log1p(len(normalized)),
         math.log1p(sum(ch.isdigit() for ch in normalized)),
         float(evidence["has_diameter_symbol"]),
-        float(bool(re.search(r"\b(PL|PLATE|BEAM|COLUMN|BOLT|WELD|STEEL|BRACKET|H\d+)\b", normalized, re.I))),
+        float(semantic_category == "PART_LABEL"),
         *lexical,
     ]
 
