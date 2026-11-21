@@ -71,8 +71,8 @@ Text remains a first-class node type. The configurable
 `text_semantics.json` file defines normalization substitutions, tokenization
 settings, category patterns, diameter/radius parsing, and entity-type
 compatibility. Edit this file for drawing-specific conventions; for example,
-the sample `?10` to `I10` replacement is explicitly a user-editable example
-and should be removed if it is not valid for your drawings.
+the sample `?10` to `I10` replacement is disabled by default. Enable it only
+if that substitution is correct for your drawing convention.
 
 The text categories are:
 
@@ -144,7 +144,9 @@ for open geometry and radius for entities other than CIRCLE/ARC.
 
 ## Rebuild graphs and labels
 
-Feature version 5 is incompatible with version 3 graphs and checkpoints.
+Feature version 5 is incompatible with version 3 and version 4 graphs and
+checkpoints. The text-correspondence heads also change the model checkpoint
+architecture, so retrain from scratch after rebuilding and relabeling graphs.
 Rebuild every graph, regenerate labeled graphs, and retrain before inference.
 
 ```python
@@ -162,6 +164,9 @@ graph = build_semantic_graph(
     spatial_tolerance=300.0,
     dimension_tolerance=2000.0,
     text_tolerance=300.0,
+    collinear_tolerance=20.0,
+    mirror_tolerance=5.0,
+    text_config_path=None,  # defaults to ai_gnn/text_semantics.json
 )
 torch.save(graph, "graphs/drawing_001_v5.pt")
 ```
