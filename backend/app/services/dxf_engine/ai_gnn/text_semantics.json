@@ -6,7 +6,8 @@
       "pattern": "^\\?([0-9]+(?:\\.[0-9]+)?)$",
       "replacement": "I$1",
       "ignore_case": true,
-      "comment": "Example only: remove this rule unless ?10 really means I10 in your drawings."
+      "comment": "Example only: remove this rule unless ?10 really means I10 in your drawings.",
+      "enabled": false
     },
     {
       "pattern": "%%C",
