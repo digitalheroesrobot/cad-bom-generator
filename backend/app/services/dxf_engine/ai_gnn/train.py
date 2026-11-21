@@ -60,6 +60,12 @@ def _supervised_tasks(data):
         mask = getattr(geometry, f"{name}_mask", None)
         if mask is not None and bool(mask.any()):
             tasks.add(name)
+    for edge_type in data.edge_types:
+        if edge_type[0] == "text" and edge_type[2] == "geometry":
+            match_mask = getattr(data[edge_type], "match_mask", None)
+            if match_mask is not None and bool(match_mask.any()):
+                tasks.add("text_geometry_matching")
+                break
     return tasks
 
 
@@ -100,8 +106,23 @@ def _loss_for_graph(logits, measurement_log, evidence, data, class_weight=1.0,
         details[f"{name}_direct_aux"] = direct_loss.detach()
         details[f"{name}_relation_aux"] = relation_loss.detach()
 
+    # Supervised semantic correspondence is applied only to edges with
+    # reviewed labels. Unlabeled candidates remain useful message-passing
+    # evidence but never become implicit negative examples.
+    for edge_type, match_logits in evidence.get("text_match_logits", {}).items():
+        store = data[edge_type]
+        match_mask = getattr(store, "match_mask", None)
+        match_targets = getattr(store, "match_y", None)
+        if match_mask is None or match_targets is None or not bool(match_mask.any()):
+            continue
+        match_loss = F.binary_cross_entropy_with_logits(
+            match_logits[match_mask], match_targets[match_mask]
+        )
+        losses.append(0.5 * match_loss)
+        details[f"text_match_{edge_type[1]}"] = match_loss.detach()
+
     if not losses:
-        raise ValueError("Graph contains no supervised classification or measurement targets.")
+        raise ValueError("Graph contains no supervised classification, measurement, or text-link targets.")
     return torch.stack(losses).sum(), details
 
 
@@ -112,6 +133,7 @@ def _evaluate(model, graphs, device, class_weight, regression_weights):
     class_correct = 0
     class_total = 0
     regression_errors = {name: [] for name in REGRESSION_TARGETS}
+    text_link_tp = text_link_fp = text_link_fn = text_link_count = 0
 
     for _, cpu_data in graphs:
         data = cpu_data.to(device)
@@ -122,6 +144,19 @@ def _evaluate(model, graphs, device, class_weight, regression_weights):
             regression_weights=regression_weights,
         )
         loss_values.append(float(loss.detach().cpu()))
+
+        for edge_type, match_logits in evidence.get("text_match_logits", {}).items():
+            store = data[edge_type]
+            match_mask = getattr(store, "match_mask", None)
+            match_targets = getattr(store, "match_y", None)
+            if match_mask is None or match_targets is None or not bool(match_mask.any()):
+                continue
+            predicted_match = match_logits[match_mask] >= 0.0
+            true_match = match_targets[match_mask] >= 0.5
+            text_link_tp += int((predicted_match & true_match).sum().item())
+            text_link_fp += int((predicted_match & ~true_match).sum().item())
+            text_link_fn += int((~predicted_match & true_match).sum().item())
+            text_link_count += int(match_mask.sum().item())
 
         geometry = data["geometry"]
         class_mask = getattr(geometry, "class_mask", None)
@@ -148,6 +183,13 @@ def _evaluate(model, graphs, device, class_weight, regression_weights):
             class_correct / class_total if class_total else None
         ),
         "classification_count": class_total,
+        "text_link_precision": text_link_tp / max(1, text_link_tp + text_link_fp) if text_link_count else None,
+        "text_link_recall": text_link_tp / max(1, text_link_tp + text_link_fn) if text_link_count else None,
+        "text_link_f1": (
+            2.0 * text_link_tp / max(1, 2 * text_link_tp + text_link_fp + text_link_fn)
+            if text_link_count else None
+        ),
+        "text_link_count": text_link_count,
     }
     for name, errors in regression_errors.items():
         metrics[f"{name}_mae"] = (
