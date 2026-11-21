@@ -183,6 +183,16 @@ def predict_geometry(data, checkpoint_path: str, device: str | None = None):
     length_valid = getattr(data["geometry"], "measured_length_valid", [False] * len(geometry_handles))
     area_valid = getattr(data["geometry"], "measured_area_valid", [False] * len(geometry_handles))
     radius_valid = getattr(data["geometry"], "radius_valid", [False] * len(geometry_handles))
+    text_match_probabilities = {}
+    for edge_type, match_logits in evidence.get("text_match_logits", {}).items():
+        edge_index = data[edge_type].edge_index
+        probabilities = torch.sigmoid(match_logits)
+        for edge_i in range(edge_index.size(1)):
+            source_index = int(edge_index[0, edge_i])
+            target_index = int(edge_index[1, edge_i])
+            text_match_probabilities[(edge_type, source_index, target_index)] = float(
+                probabilities[edge_i].detach().cpu()
+            )
 
     predictions = []
     for geometry_index in range(len(class_ids)):
@@ -197,6 +207,12 @@ def predict_geometry(data, checkpoint_path: str, device: str | None = None):
                     dimension_text_matches.append({
                         "text_handle": str(text_handles[text_index]),
                         "content": str(text_contents[text_index]) if text_index < len(text_contents) else "",
+                        "normalized_content": str(text_normalized[text_index]) if text_index < len(text_normalized) else "",
+                        "semantic_type": str(text_semantics[text_index]) if text_index < len(text_semantics) else "UNKNOWN",
+                        "has_diameter_symbol": bool(text_attrs[3]) if len(text_attrs) > 3 else False,
+                        "has_radius_symbol": bool(text_attrs[4]) if len(text_attrs) > 4 else False,
+                        "diameter_value": _optional_float(text_attrs, 6),
+                        "radius_value": _optional_float(text_attrs, 8),
                         "normalized_distance": text_attrs[0] if len(text_attrs) > 0 else None,
                         "candidate_confidence": text_attrs[1] if len(text_attrs) > 1 else None,
                         "semantic_compatibility": text_attrs[2] if len(text_attrs) > 2 else None,
@@ -266,6 +282,9 @@ def predict_geometry(data, checkpoint_path: str, device: str | None = None):
                     "radius_value": _optional_float(attrs, 11),
                     "diameter_bbox_relative_error": attrs[14] if len(attrs) > 14 else None,
                     "radius_bbox_relative_error": attrs[15] if len(attrs) > 15 else None,
+                    "match_probability": text_match_probabilities.get(
+                        (("text", text_relation, "geometry"), text_index, geometry_index)
+                    ),
                 })
 
         predicted = torch.expm1(
