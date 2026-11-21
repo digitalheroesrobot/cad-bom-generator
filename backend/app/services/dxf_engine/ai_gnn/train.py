@@ -30,9 +30,9 @@ def _load_graphs(paths):
     graphs = []
     for path in paths:
         data = torch.load(path, map_location="cpu", weights_only=False)
-        if data.graph_metadata.get("feature_version") != 4:
+        if data.graph_metadata.get("feature_version") != 5:
             raise ValueError(
-                f"{path}: expected semantic graph feature_version=4; rebuild this graph."
+                f"{path}: expected semantic graph feature_version=5; rebuild this graph."
             )
         graphs.append((str(path), data))
     return graphs
@@ -201,7 +201,7 @@ def _save_training_checkpoint(
         "hidden_channels": hidden_channels,
         "num_layers": num_layers,
         "dropout": dropout,
-        "feature_version": 4,
+        "feature_version": 5,
         "architecture": "relation_aware_hybrid_v1",
         "target_encoding": "log1p",
         "regression_targets": list(REGRESSION_TARGETS),
@@ -252,7 +252,7 @@ def _restore_training_checkpoint(
     )
 
     expected = {
-        "feature_version": 4,
+        "feature_version": 5,
         "architecture": "relation_aware_hybrid_v1",
         "input_dims": input_dims,
         "edge_dims": edge_dims,
@@ -554,7 +554,7 @@ def train_model(
         "hidden_channels": hidden_channels,
         "num_layers": num_layers,
         "dropout": dropout,
-        "feature_version": 4,
+        "feature_version": 5,
         "architecture": "relation_aware_hybrid_v1",
         "target_encoding": "log1p",
         "regression_targets": list(REGRESSION_TARGETS),
