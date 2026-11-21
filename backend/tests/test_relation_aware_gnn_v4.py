@@ -9,6 +9,7 @@ from app.services.dxf_engine.ai_gnn.graph_builder import (
 )
 from app.services.dxf_engine.ai_gnn.labels import attach_geometry_targets
 from app.services.dxf_engine.ai_gnn.model import DXFSemanticGNN
+from app.services.dxf_engine.ai_gnn.train import _loss_for_graph
 from torch_geometric.data import HeteroData
 
 
@@ -127,6 +128,9 @@ def test_relation_aware_model_outputs_positive_hybrid_measurements():
         data[edge_type].edge_index = torch.tensor(indices, dtype=torch.long)
         data[edge_type].edge_attr = torch.randn(1, width)
         edge_dims["|".join(edge_type)] = width
+    match_edge = ("text", "dimension_value_candidate", "geometry")
+    data[match_edge].match_y = torch.tensor([1.0])
+    data[match_edge].match_mask = torch.tensor([True])
 
     model = DXFSemanticGNN(
         metadata=data.metadata(),
@@ -148,4 +152,7 @@ def test_relation_aware_model_outputs_positive_hybrid_measurements():
     assert torch.all(evidence["relation_raw"] >= 0)
     assert torch.all(evidence["fused_raw"] >= 0)
     assert evidence["text_match_logits"][("text", "dimension_value_candidate", "geometry")].shape == (1,)
+    loss, details = _loss_for_graph(logits, fused_log, evidence, data)
+    assert torch.isfinite(loss)
+    assert "text_match_dimension_value_candidate" in details
     assert torch.all((evidence["fusion_weight"] >= 0) & (evidence["fusion_weight"] <= 1))
