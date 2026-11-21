@@ -49,6 +49,18 @@ and ANGULAR_3P use their available definition points (or endpoint fallback).
 This prevents special dimensions from being silently consumed by the generic
 measured-point branch.
 
+Dimension-to-geometry edges now carry dimension-kind flags, displayed and
+actual value validity/value, and geometry circle/arc/closed applicability.
+These features preserve the Dimension -> Anchor -> Geometry evidence path,
+including special RADIUS and DIAMETRIC attachment semantics.
+
+The geometry relation builder exposes independent `spatial_tolerance`,
+`collinear_tolerance`, `mirror_tolerance`, `connection_tolerance`, and
+`text_tolerance` controls. Curvature and tangent continuity are edge/anchor
+evidence, not hard constraints. Mirror candidates search unoriented axes in
+5-degree increments over 180 degrees; adjust `mirror_tolerance` separately
+from the collinearity tolerance.
+
 Geometry-to-geometry edge attributes include a validity indicator for
 endpoint distance. Missing/non-finite values are not treated as trustworthy
 zero measurements; downstream code can distinguish unavailable evidence.
@@ -79,8 +91,9 @@ The four geometry-link relation types are
 Text-to-geometry edge features combine bounding-box distance, text-center to
 geometry distance, text-center to geometry-center distance, proximity,
 semantic compatibility, diameter/radius symbol flags, parsed numeric values,
-and geometry applicability indicators. Candidate ranking combines distance
-and semantic compatibility. A candidate edge is evidence, not a verified
+geometry applicability indicators, and relative fit between parsed diameter/radius
+values and the candidate geometry's bounding-box span. Candidate ranking
+combines all three distance measures and semantic compatibility. A candidate edge is evidence, not a verified
 text/geometry correspondence.
 
 Chinese text uses jieba when installed. If it is unavailable, deterministic
