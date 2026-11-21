@@ -1260,7 +1260,9 @@ def build_semantic_graph(
     # --------------------------------------------------------------
     for ti, text in enumerate(text_elements):
         category = text_semantics[ti]
-        if category == "UNKNOWN":
+        if category in {"UNKNOWN", "ANNOTATION"}:
+            # General notes remain available as text nodes, but cannot send
+            # messages to dimensions that would indirectly reach geometry.
             continue
         query = text_bounds[ti]
         matches = []
