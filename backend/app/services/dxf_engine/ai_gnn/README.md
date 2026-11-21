@@ -82,8 +82,9 @@ The text categories are:
 - `ANNOTATION`: general notes and manufacturing/load instructions.
 - `TOLERANCE_GDT`: tolerances and GD&T callouts.
 
-Annotation text is preserved as a text node and may link to nearby dimension
-context, but it is excluded from all direct text-to-geometry candidate edges.
+Annotation text is preserved as a text node but has no outgoing text-to-dimension
+or text-to-geometry edges, so general notes cannot indirectly influence a
+geometry prediction through a nearby dimension.
 The four geometry-link relation types are
 `dimension_value_candidate`, `part_label_candidate`,
 `geometry_description_candidate`, and `gdt_candidate`.
