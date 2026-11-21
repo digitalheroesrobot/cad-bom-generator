@@ -58,8 +58,9 @@ The geometry relation builder exposes independent `spatial_tolerance`,
 `collinear_tolerance`, `mirror_tolerance`, `connection_tolerance`, and
 `text_tolerance` controls. Curvature and tangent continuity are edge/anchor
 evidence, not hard constraints. Mirror candidates search unoriented axes in
-5-degree increments over 180 degrees; adjust `mirror_tolerance` separately
-from the collinearity tolerance.
+5-degree coarse increments over 180 degrees, followed by a 1-degree local
+refinement; adjust `mirror_tolerance` separately from the collinearity
+tolerance.
 
 Geometry-to-geometry edge attributes include a validity indicator for
 endpoint distance. Missing/non-finite values are not treated as trustworthy
@@ -152,8 +153,8 @@ for open geometry and radius for entities other than CIRCLE/ARC.
 
 ## Rebuild graphs and labels
 
-Feature version 6 is incompatible with version 3 and version 4 graphs and
-checkpoints. The text-correspondence heads also change the model checkpoint
+Feature version 6 is incompatible with version 3, version 4, and version 5
+graphs and checkpoints. The text-correspondence heads also change the model checkpoint
 architecture, so retrain from scratch after rebuilding and relabeling graphs.
 Rebuild every graph, regenerate labeled graphs, and retrain before inference.
 
