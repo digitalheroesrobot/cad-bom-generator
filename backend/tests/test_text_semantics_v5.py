@@ -156,3 +156,21 @@ def test_reviewed_text_geometry_labels_mask_unreviewed_candidates():
     assert graph[edge_type].match_y.tolist() == [1.0, 0.0]
     assert graph[edge_type].match_mask.tolist() == [True, False]
     assert graph.graph_metadata["text_geometry_supervision"]["counts"]["positive"] == 1
+
+
+
+def test_mirror_candidates_support_diagonal_axes():
+    from shapely.geometry import box
+
+    geometry_a = _geometry("A", "LWPOLYLINE", box(9.5, -0.5, 10.5, 0.5))
+    geometry_b = _geometry("B", "LWPOLYLINE", box(-0.5, 9.5, 0.5, 10.5))
+    graph = build_semantic_graph(
+        [geometry_a, geometry_b], [], [],
+        spatial_tolerance=100.0, collinear_tolerance=1.0,
+        mirror_tolerance=0.1,
+    )
+    edge_type = ("geometry", "mirror_candidate", "geometry")
+    edge_index = graph[edge_type].edge_index
+    assert edge_index.size(1) == 1
+    # Reflection axis y=x is 45 degrees, represented as 45/180 == 0.25.
+    assert abs(float(graph[edge_type].edge_attr[0, 1]) - 0.25) < 1e-6
