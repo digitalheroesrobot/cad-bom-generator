@@ -811,6 +811,9 @@ def build_semantic_graph(
                 best_mirror = None
                 # Search the full unoriented 180-degree axis range, including
                 # horizontal, vertical, diagonal and arbitrary orientations.
+                # Coarse global search prevents a vertical/horizontal bias.
+                # Refine around the best coarse axis so diagonal and arbitrary
+                # orientations are not quantized to 5-degree increments.
                 for axis_degrees in range(0, 180, 5):
                     rotated = affine_rotate(gb, -axis_degrees, origin=midpoint)
                     reflected = affine_scale(rotated, xfact=-1.0, yfact=1.0, origin=midpoint)
@@ -818,6 +821,16 @@ def build_semantic_graph(
                     error = float(ga.hausdorff_distance(reflected))
                     if best_mirror is None or error < best_mirror[0]:
                         best_mirror = (error, axis_degrees)
+                if best_mirror is not None:
+                    coarse_axis = best_mirror[1]
+                    for axis_degrees in range(coarse_axis - 5, coarse_axis + 6):
+                        axis_degrees %= 180
+                        rotated = affine_rotate(gb, -axis_degrees, origin=midpoint)
+                        reflected = affine_scale(rotated, xfact=-1.0, yfact=1.0, origin=midpoint)
+                        reflected = affine_rotate(reflected, axis_degrees, origin=midpoint)
+                        error = float(ga.hausdorff_distance(reflected))
+                        if error < best_mirror[0]:
+                            best_mirror = (error, axis_degrees)
                 if best_mirror and best_mirror[0] <= mirror_tol:
                     error, axis_degrees = best_mirror
                     _add_edge(edge_store, ("geometry", "mirror_candidate", "geometry"), i, j, [
