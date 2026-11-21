@@ -23,7 +23,7 @@ measurement heads are combined by a learnable confidence/fusion head.
 The output includes geometry classification, positive length/area/radius
 estimates, direct and relation-based estimates, and per-task fusion weights.
 
-## Feature schema (version 4)
+## Feature schema (version 5)
 
 | Node | Feature dimension |
 |---|---:|
@@ -52,6 +52,52 @@ measured-point branch.
 Geometry-to-geometry edge attributes include a validity indicator for
 endpoint distance. Missing/non-finite values are not treated as trustworthy
 zero measurements; downstream code can distinguish unavailable evidence.
+
+## Text semantics and evidence (schema version 5)
+
+Text remains a first-class node type. The configurable
+`text_semantics.json` file defines normalization substitutions, tokenization
+settings, category patterns, diameter/radius parsing, and entity-type
+compatibility. Edit this file for drawing-specific conventions; for example,
+the sample `?10` to `I10` replacement is explicitly a user-editable example
+and should be removed if it is not valid for your drawings.
+
+The text categories are:
+
+- `DIMENSION_VALUE`: diameter/radius/linear measurement strings.
+- `PART_LABEL`: part names, section identifiers, and part numbers.
+- `GEOMETRY_DESCRIPTION`: descriptions of geometric features.
+- `ANNOTATION`: general notes and manufacturing/load instructions.
+- `TOLERANCE_GDT`: tolerances and GD&T callouts.
+
+Annotation text is preserved as a text node and may link to nearby dimension
+context, but it is excluded from all direct text-to-geometry candidate edges.
+The four geometry-link relation types are
+`dimension_value_candidate`, `part_label_candidate`,
+`geometry_description_candidate`, and `gdt_candidate`.
+
+Text-to-geometry edge features combine bounding-box distance, text-center to
+geometry distance, text-center to geometry-center distance, proximity,
+semantic compatibility, diameter/radius symbol flags, parsed numeric values,
+and geometry applicability indicators. Candidate ranking combines distance
+and semantic compatibility. A candidate edge is evidence, not a verified
+text/geometry correspondence.
+
+Chinese text uses jieba when installed. If it is unavailable, deterministic
+Chinese character bigrams are used so graph generation does not require an
+additional dependency. User-defined replacements and category regexes are
+kept in JSON rather than embedded in Python.
+
+Geometry-to-geometry relations now use a separate `collinear_tolerance`,
+plus tangent-continuity and curvature-similarity evidence. Mirror candidates
+test multiple unoriented axes over the full 180-degree range, rather than
+assuming only a vertical mirror. Curvature features are derived from
+tessellated geometry; the raw DXF radius target is not copied into model
+features.
+
+Diameter/radius text and the existing Dimension -> Anchor -> Geometry paths
+are both retained as evidence routes. A parsed diameter is not treated as a
+verified radius/diameter target until a correspondence is reviewed.
 
 ## Measurement applicability and provenance
 
@@ -84,7 +130,7 @@ for open geometry and radius for entities other than CIRCLE/ARC.
 
 ## Rebuild graphs and labels
 
-Feature version 4 is incompatible with version 3 graphs and checkpoints.
+Feature version 5 is incompatible with version 3 graphs and checkpoints.
 Rebuild every graph, regenerate labeled graphs, and retrain before inference.
 
 ```python
@@ -103,17 +149,17 @@ graph = build_semantic_graph(
     dimension_tolerance=2000.0,
     text_tolerance=300.0,
 )
-torch.save(graph, "graphs/drawing_001_v4.pt")
+torch.save(graph, "graphs/drawing_001_v5.pt")
 ```
 
 Attach labels:
 
 ```bash
 python -m app.services.dxf_engine.ai_gnn.labels \
-  --graph graphs/drawing_001_v4.pt \
+  --graph graphs/drawing_001_v5.pt \
   --labels labels/drawing_001.csv \
   --classes classes.json \
-  --output labeled/drawing_001_v4.pt
+  --output labeled/drawing_001_v5.pt
 ```
 
 ## Train / validation / test
@@ -123,11 +169,11 @@ drawing. Keep all split graph files disjoint.
 
 ```bash
 python -m app.services.dxf_engine.ai_gnn.train \
-  --train-graphs labeled/train_001_v4.pt labeled/train_002_v4.pt \
-  --val-graphs labeled/validation_001_v4.pt \
-  --test-graphs labeled/test_001_v4.pt \
+  --train-graphs labeled/train_001_v5.pt labeled/train_002_v5.pt \
+  --val-graphs labeled/validation_001_v5.pt \
+  --test-graphs labeled/test_001_v5.pt \
   --classes classes.json \
-  --output models/dxf_relation_aware_gnn_v4.pt \
+  --output models/dxf_relation_aware_gnn_v5.pt \
   --epochs 500 --patience 25 --checkpoint-every 100
 ```
 
@@ -137,7 +183,7 @@ Training checkpoints are written under `models/checkpoints/`:
   numbered snapshots every 100 completed epochs.
 - `checkpoint_latest.pt` is atomically replaced with the newest resumable
   snapshot.
-- The final `dxf_relation_aware_gnn_v4.pt` remains the best-validation model
+- The final `dxf_relation_aware_gnn_v5.pt` remains the best-validation model
   intended for inference; it is not the same thing as the latest training
   snapshot.
 
@@ -147,11 +193,11 @@ value is the desired total epoch count, not the number of additional epochs:
 
 ```bash
 python -m app.services.dxf_engine.ai_gnn.train \
-  --train-graphs labeled/train_001_v4.pt labeled/train_002_v4.pt \
-  --val-graphs labeled/validation_001_v4.pt \
-  --test-graphs labeled/test_001_v4.pt \
+  --train-graphs labeled/train_001_v5.pt labeled/train_002_v5.pt \
+  --val-graphs labeled/validation_001_v5.pt \
+  --test-graphs labeled/test_001_v5.pt \
   --classes classes.json \
-  --output models/dxf_relation_aware_gnn_v4.pt \
+  --output models/dxf_relation_aware_gnn_v5.pt \
   --epochs 500 --patience 25 --checkpoint-every 100 \
   --resume-from models/checkpoints/checkpoint_latest.pt
 ```
@@ -174,7 +220,7 @@ from app.services.dxf_engine.ai_gnn.inference import predict_geometry
 
 predictions = predict_geometry(
     graph,
-    "models/dxf_relation_aware_gnn_v4.pt",
+    "models/dxf_relation_aware_gnn_v5.pt",
 )
 ```
 
