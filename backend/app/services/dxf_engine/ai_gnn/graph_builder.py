@@ -731,6 +731,25 @@ def build_semantic_graph(
             collinear_score = _collinear_score(
                 ga, gb, dir_a, dir_b, collinear_tolerance
             )
+            seg_a, seg_b = _segment_records(ga), _segment_records(gb)
+            tangent_continuity = 0.0
+            curvature_similarity = 0.0
+            if seg_a and seg_b:
+                sa, sb = min(
+                    ((x, y) for x in seg_a for y in seg_b),
+                    key=lambda pair: min(
+                        math.dist(pair[0]["start"], pair[1]["start"]),
+                        math.dist(pair[0]["start"], pair[1]["end"]),
+                        math.dist(pair[0]["end"], pair[1]["start"]),
+                        math.dist(pair[0]["end"], pair[1]["end"]),
+                    ),
+                )
+                tangent_angle = _angle_between(sa["direction"], sb["direction"])
+                if tangent_angle is not None:
+                    tangent_continuity = max(0.0, 1.0 - tangent_angle / max(tangent_tol, 1e-9))
+                curvature_a, curvature_b = _local_curvature_summary(ga), _local_curvature_summary(gb)
+                if curvature_a is not None and curvature_b is not None:
+                    curvature_similarity = math.exp(-abs(curvature_a - curvature_b) / max(curvature_tolerance, 1e-9))
 
             relation_records = []
             if distance <= spatial_tolerance:
@@ -762,7 +781,8 @@ def build_semantic_graph(
                 edge_type = ("geometry", relation, "geometry")
                 attrs = _make_relation_attrs(
                     distance, angle_diff, intersection_length,
-                    endpoint_distance, overlap_ratio, confidence, scale_safe
+                    endpoint_distance, overlap_ratio, confidence, scale_safe,
+                    tangent_continuity, curvature_similarity, collinear_score,
                 )
                 _add_edge(edge_store, edge_type, i, j, attrs)
                 pair_seen.add((i, j, relation))
@@ -778,23 +798,28 @@ def build_semantic_graph(
                         i, j, [length_delta, length_a / scale_safe, length_b / scale_safe],
                     )
             try:
+                from shapely.affinity import rotate as affine_rotate
                 from shapely.affinity import scale as affine_scale
                 ca, cb = ga.centroid, gb.centroid
-                mirror_axis_x = (float(ca.x) + float(cb.x)) * 0.5
-                reflected_b = affine_scale(
-                    gb, xfact=-1.0, yfact=1.0, origin=(mirror_axis_x, 0.0)
-                )
-                mirror_error = float(ga.hausdorff_distance(reflected_b))
-                mirror_tolerance = max(float(spatial_tolerance) * 0.02, 1e-6)
-                if mirror_error <= mirror_tolerance:
-                    _add_edge(
-                        edge_store, ("geometry", "mirror_candidate", "geometry"),
-                        i, j, [
-                            mirror_error / scale_safe,
-                            abs(float(ca.y) - float(cb.y)) / scale_safe,
-                            max(0.0, 1.0 - mirror_error / mirror_tolerance),
-                        ],
-                    )
+                midpoint = ((float(ca.x) + float(cb.x)) * 0.5, (float(ca.y) + float(cb.y)) * 0.5)
+                mirror_tolerance = max(float(collinear_tolerance) * 0.25, 1e-6)
+                best_mirror = None
+                # Search the full unoriented 180-degree axis range, including
+                # horizontal, vertical, diagonal and arbitrary orientations.
+                for axis_degrees in range(0, 180, 15):
+                    rotated = affine_rotate(gb, -axis_degrees, origin=midpoint)
+                    reflected = affine_scale(rotated, xfact=-1.0, yfact=1.0, origin=midpoint)
+                    reflected = affine_rotate(reflected, axis_degrees, origin=midpoint)
+                    error = float(ga.hausdorff_distance(reflected))
+                    if best_mirror is None or error < best_mirror[0]:
+                        best_mirror = (error, axis_degrees)
+                if best_mirror and best_mirror[0] <= mirror_tolerance:
+                    error, axis_degrees = best_mirror
+                    _add_edge(edge_store, ("geometry", "mirror_candidate", "geometry"), i, j, [
+                        error / scale_safe, axis_degrees / 180.0,
+                        midpoint[0] / scale_safe, midpoint[1] / scale_safe,
+                        max(0.0, 1.0 - error / mirror_tolerance),
+                    ])
             except Exception:
                 pass
 
@@ -1234,18 +1259,18 @@ def build_semantic_graph(
     # zero edges in a particular drawing. This is essential when training a
     # single model over separate train/validation/test drawings.
     canonical_edge_dims = {
-        ("geometry", "near", "geometry"): 7,
-        ("geometry", "parallel", "geometry"): 7,
-        ("geometry", "perpendicular", "geometry"): 7,
-        ("geometry", "intersects", "geometry"): 7,
-        ("geometry", "touches", "geometry"): 7,
-        ("geometry", "overlaps", "geometry"): 7,
-        ("geometry", "contains", "geometry"): 7,
-        ("geometry", "within", "geometry"): 7,
-        ("geometry", "connected", "geometry"): 7,
-        ("geometry", "collinear", "geometry"): 7,
+        ("geometry", "near", "geometry"): 10,
+        ("geometry", "parallel", "geometry"): 10,
+        ("geometry", "perpendicular", "geometry"): 10,
+        ("geometry", "intersects", "geometry"): 10,
+        ("geometry", "touches", "geometry"): 10,
+        ("geometry", "overlaps", "geometry"): 10,
+        ("geometry", "contains", "geometry"): 10,
+        ("geometry", "within", "geometry"): 10,
+        ("geometry", "connected", "geometry"): 10,
+        ("geometry", "collinear", "geometry"): 10,
         ("geometry", "equal_length_candidate", "geometry"): 3,
-        ("geometry", "mirror_candidate", "geometry"): 3,
+        ("geometry", "mirror_candidate", "geometry"): 5,
         ("geometry", "has_anchor", "anchor"): 2,
         ("dimension", "describes", "geometry"): 2,
         ("dimension", "measures_from", "geometry"): 2,
@@ -1298,7 +1323,7 @@ def build_semantic_graph(
 
     data.graph_metadata = {
         "graph_type": "dxf_semantic_heterogeneous",
-        "feature_version": 4,
+        "feature_version": 5,
         "origin": origin,
         "scale": float(scale_safe),
         "node_counts": {
@@ -1321,6 +1346,9 @@ def build_semantic_graph(
             "overlap_ratio",
             "confidence",
             "endpoint_distance_valid",
+            "tangent_continuity",
+            "curvature_similarity",
+            "collinear_score",
         ],
         "edge_feature_dims": {
             "|".join(edge_type): int(data[edge_type].edge_attr.size(-1))
