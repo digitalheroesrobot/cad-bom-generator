@@ -3,7 +3,8 @@ from __future__ import annotations
 import math
 import torch
 
-from .geometry_features import GEOMETRY_FEATURE_NAMES\nfrom .model import DXFSemanticGNN
+from .geometry_features import GEOMETRY_FEATURE_NAMES
+from .model import DXFSemanticGNN
 
 
 def _optional_float(values, index):
