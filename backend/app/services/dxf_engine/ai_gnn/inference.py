@@ -283,6 +283,36 @@ def predict_geometry(data, checkpoint_path: str, device: str | None = None):
                     "radius_value": _optional_float(attrs, 11),
                     "diameter_bbox_relative_error": attrs[14] if len(attrs) > 14 else None,
                     "radius_bbox_relative_error": attrs[15] if len(attrs) > 15 else None,
+                    "geometry_type_features": {
+                        "closed_profile": bool(attrs[16]) if len(attrs) > 16 else False,
+                        "linear_geometry": bool(attrs[17]) if len(attrs) > 17 else False,
+                        "point": bool(attrs[18]) if len(attrs) > 18 else False,
+                        "other": bool(attrs[19]) if len(attrs) > 19 else False,
+                        "unknown": bool(attrs[20]) if len(attrs) > 20 else False,
+                        "polygon": bool(attrs[21]) if len(attrs) > 21 else False,
+                        "linestring": bool(attrs[22]) if len(attrs) > 22 else False,
+                        "multilinestring": bool(attrs[23]) if len(attrs) > 23 else False,
+                    },
+                    "entity_type_features": {
+                        "circle": bool(attrs[24]) if len(attrs) > 24 else False,
+                        "arc": bool(attrs[25]) if len(attrs) > 25 else False,
+                        "ellipse": bool(attrs[26]) if len(attrs) > 26 else False,
+                    },
+                    "geometry_shape": {
+                        "bbox_aspect_ratio": attrs[27] if len(attrs) > 27 else None,
+                        "bbox_max_span_normalized": attrs[28] if len(attrs) > 28 else None,
+                        "circularity": attrs[29] if len(attrs) > 29 else None,
+                    },
+                    "linked_dimension_evidence": {
+                        "has_diametric_dimension": bool(attrs[30]) if len(attrs) > 30 else False,
+                        "has_radius_dimension": bool(attrs[31]) if len(attrs) > 31 else False,
+                        "dimension_value_valid": bool(attrs[32]) if len(attrs) > 32 else False,
+                        "dimension_value_normalized": attrs[33] if len(attrs) > 33 else None,
+                        "text_dimension_value_agreement": attrs[34] if len(attrs) > 34 else None,
+                        "dimension_geometry_distance_normalized": attrs[35] if len(attrs) > 35 else None,
+                        "has_linked_dimension": bool(attrs[36]) if len(attrs) > 36 else False,
+                        "has_compatible_dimension_kind": bool(attrs[37]) if len(attrs) > 37 else False,
+                    },
                     "match_probability": text_match_probabilities.get(
                         (("text", text_relation, "geometry"), text_index, geometry_index)
                     ),
