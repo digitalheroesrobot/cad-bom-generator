@@ -129,8 +129,7 @@ def test_annotation_is_preserved_but_never_connected_to_geometry():
     assert abs(float(graph[edge_type].edge_attr[0, 14])) < 1e-4
     assert int(edge_index[0, 0]) == 0
     assert int(edge_index[1, 0]) == 0
-    # Annotation text remains a node and may contextualize a dimension, but
-    # must not create any direct text-to-geometry evidence edge.
+    # Annotation text remains a node but has no dimension or geometry links.
     for relation in (
         "dimension_value_candidate", "part_label_candidate",
         "geometry_description_candidate", "gdt_candidate",
