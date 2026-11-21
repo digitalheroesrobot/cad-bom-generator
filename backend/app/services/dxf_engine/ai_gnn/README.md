@@ -304,3 +304,16 @@ Before production BOM use, evaluate by held-out drawings from different
 projects, units, CAD conventions, and dimension styles. Report per-task MAE,
 coverage, applicability-mask counts, calibration, and dimension-link
 precision/recall. A plausible prediction alone is not proof of correctness.
+
+
+### v6 semantic graph tests
+
+Run the v6 text/geometry regression tests from the `backend` directory:
+
+```bash
+python -m pytest tests/test_text_semantics_v6.py tests/test_text_geometry_evidence_v6.py -v
+```
+
+The previous `test_text_semantics_v5.py` test module was replaced because its
+expected graph version and text-to-geometry edge width no longer describe the
+v6 schema.
