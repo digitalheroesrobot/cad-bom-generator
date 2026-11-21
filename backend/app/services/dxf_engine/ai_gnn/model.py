@@ -171,6 +171,27 @@ class DXFSemanticGNN(nn.Module):
             nn.Linear(hidden_channels, hidden_channels // 2 or 1),
             nn.GELU(), nn.Linear(hidden_channels // 2 or 1, 3),
         )
+        self.text_match_edge_types = [
+            edge_type for edge_type in self.edge_types
+            if edge_type[0] == "text" and edge_type[2] == "geometry"
+            and edge_type[1] in {
+                "dimension_value_candidate", "part_label_candidate",
+                "geometry_description_candidate", "gdt_candidate",
+            }
+        ]
+        self.text_match_keys = {
+            edge_type: f"text_match_{index}"
+            for index, edge_type in enumerate(self.text_match_edge_types)
+        }
+        self.text_match_heads = nn.ModuleDict()
+        for edge_type in self.text_match_edge_types:
+            edge_width = max(1, int(edge_dims.get(_edge_key(edge_type), 1)))
+            self.text_match_heads[self.text_match_keys[edge_type]] = nn.Sequential(
+                nn.Linear(hidden_channels * 2 + edge_width, hidden_channels),
+                nn.GELU(), nn.Dropout(dropout),
+                nn.Linear(hidden_channels, hidden_channels // 2 or 1),
+                nn.GELU(), nn.Linear(hidden_channels // 2 or 1, 1),
+            )
 
     def forward(self, data):
         x_dict = {n: self.input_proj[n](data[n].x) for n in self.node_types}
@@ -188,6 +209,25 @@ class DXFSemanticGNN(nn.Module):
         relation_raw = F.softplus(self.relation_head(geometry_relation))
         fusion = torch.sigmoid(self.fusion_head(geometry_relation))
         fused_raw = fusion * direct_raw + (1.0 - fusion) * relation_raw
+        text_match_logits = {}
+        for edge_type in self.text_match_edge_types:
+            store = data[edge_type]
+            edge_index = getattr(store, "edge_index", None)
+            if edge_index is None or edge_index.numel() == 0:
+                text_match_logits[edge_type] = geometry_relation.new_empty((0,))
+                continue
+            src, dst = edge_index[0], edge_index[1]
+            edge_attr = getattr(store, "edge_attr", None)
+            edge_width = self.text_match_heads[self.text_match_keys[edge_type]][0].in_features - 2 * geometry_relation.size(-1)
+            if edge_attr is None or edge_attr.size(-1) == 0:
+                edge_attr = geometry_relation.new_zeros((src.numel(), edge_width))
+            match_input = torch.cat([
+                x_dict["text"][src], geometry_relation[dst], edge_attr,
+            ], dim=-1)
+            text_match_logits[edge_type] = self.text_match_heads[
+                self.text_match_keys[edge_type]
+            ](match_input).squeeze(-1)
+
         evidence = {
             "direct_log": torch.log1p(direct_raw),
             "relation_log": torch.log1p(relation_raw),
@@ -195,5 +235,6 @@ class DXFSemanticGNN(nn.Module):
             "direct_raw": direct_raw,
             "relation_raw": relation_raw,
             "fused_raw": fused_raw,
+            "text_match_logits": text_match_logits,
         }
         return class_logits, torch.log1p(fused_raw), x_dict, evidence
