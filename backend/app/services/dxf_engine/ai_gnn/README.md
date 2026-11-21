@@ -39,7 +39,7 @@ it is the supervised radius target; this prevents target leakage. Analytical
 length and area are not model inputs.
 
 The v7 geometry vector adds scale-normalized boundary descriptors: bounding-box
-diagonal/aspect ratio, perimeter and convex-hull perimeter, segment count and
+diagonal/aspect ratio, perimeter and ARC length, convex-hull perimeter, segment count and
 length statistics, PCA principal-axis spans, hole count/perimeter and boundary
 fractions, polygonal/circle/arc indicators, and explicit perimeter/hole-data
 availability flags. Length-like descriptors are divided by the drawing scale.
@@ -334,7 +334,7 @@ v6 schema.
 
 ## Geometry feature schema v7
 
-The geometry node has 45 inputs: the preserved 24-value v6 prefix plus 19
+The geometry node has 45 inputs: the preserved 24-value v6 prefix plus 21
 versioned descriptors from `geometry_features.py`. The 21-value suffix is
 ordered by `GEOMETRY_FEATURE_NAMES`; its final flags identify whether
 perimeter and interior-ring information are available. Unavailable values
