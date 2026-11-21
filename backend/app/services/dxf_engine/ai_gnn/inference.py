@@ -264,6 +264,8 @@ def predict_geometry(data, checkpoint_path: str, device: str | None = None):
                     "has_radius_symbol": bool(attrs[7]) if len(attrs) > 7 else False,
                     "diameter_value": _optional_float(attrs, 9),
                     "radius_value": _optional_float(attrs, 11),
+                    "diameter_bbox_relative_error": attrs[14] if len(attrs) > 14 else None,
+                    "radius_bbox_relative_error": attrs[15] if len(attrs) > 15 else None,
                 })
 
         predicted = torch.expm1(
