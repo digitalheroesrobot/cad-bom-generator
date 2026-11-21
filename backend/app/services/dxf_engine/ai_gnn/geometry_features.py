@@ -12,6 +12,7 @@ GEOMETRY_FEATURE_NAMES = (
     "bbox_diagonal_over_scale",
     "bbox_aspect_ratio",
     "perimeter_log_over_scale",
+    "arc_length_log_over_scale",
     "convex_hull_perimeter_log_over_scale",
     "segment_count_log",
     "segment_length_mean_over_scale",
@@ -25,7 +26,8 @@ GEOMETRY_FEATURE_NAMES = (
     "hole_boundary_fraction",
     "convex_hull_to_boundary_perimeter_ratio",
     "is_polygonal",
-    "is_circle_or_arc",
+    "is_circle",
+    "is_arc",
     "has_perimeter",
     "has_hole_data",
 )
@@ -84,7 +86,11 @@ def _principal_axis_spans(parts):
     points = []
     for part in parts:
         try:
-            points.extend((float(p[0]), float(p[1])) for p in part.coords)
+            points.extend(
+                (float(p[0]), float(p[1]))
+                for p in part.coords
+                if math.isfinite(float(p[0])) and math.isfinite(float(p[1]))
+            )
         except Exception:
             continue
     if len(points) < 2:
@@ -124,7 +130,7 @@ def extract_geometry_descriptors(element, scale: float = 1.0) -> list[float]:
         except Exception:
             bounds = None
 
-    if bounds and len(bounds) == 4:
+    if bounds and len(bounds) == 4 and all(math.isfinite(v) for v in bounds):
         minx, miny, maxx, maxy = bounds
         width, height = max(0.0, maxx - minx), max(0.0, maxy - miny)
         diagonal = math.hypot(width, height) / scale
@@ -153,6 +159,7 @@ def extract_geometry_descriptors(element, scale: float = 1.0) -> list[float]:
             pass
     has_perimeter = perimeter_raw > 1e-9
     perimeter_scaled = perimeter_raw / scale if has_perimeter else 0.0
+    arc_length_scaled = perimeter_scaled if entity_type == "ARC" else 0.0
     hull_perimeter_scaled = hull_perimeter_raw / scale if hull_perimeter_raw > 1e-9 else 0.0
 
     hole_count = 0
@@ -196,6 +203,7 @@ def extract_geometry_descriptors(element, scale: float = 1.0) -> list[float]:
         diagonal,
         aspect,
         math.log1p(perimeter_scaled),
+        math.log1p(arc_length_scaled),
         math.log1p(hull_perimeter_scaled),
         math.log1p(count),
         mean_length,
@@ -209,7 +217,8 @@ def extract_geometry_descriptors(element, scale: float = 1.0) -> list[float]:
         hole_fraction,
         hull_ratio,
         float(polygonal is not None),
-        float(entity_type in {"CIRCLE", "ARC"}),
+        float(entity_type == "CIRCLE"),
+        float(entity_type == "ARC"),
         float(has_perimeter),
         float(has_hole_data),
     ]
