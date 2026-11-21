@@ -31,7 +31,7 @@
       "comment": "Example only: enable only if ?10 really means I10 in your drawing convention."
     },
     {
-      "pattern": "^\\?\\?%%C",
+      "pattern": "^\\?\\?Ø",
       "replacement": "%%C",
       "ignore_case": true,
       "enabled": false,
