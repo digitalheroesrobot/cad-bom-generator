@@ -114,6 +114,8 @@ def predict_geometry(data, checkpoint_path: str, device: str | None = None):
         if (
             data.graph_metadata.get("geometry_feature_schema") != "dxf_geometry_shape_v7"
             or data.graph_metadata.get("geometry_feature_names") != expected_names
+            or data.graph_metadata.get("geometry_feature_dimension") != 24 + len(expected_names)
+            or data["geometry"].x.size(-1) != checkpoint.get("input_dims", {}).get("geometry")
             or checkpoint.get("geometry_feature_schema") != "dxf_geometry_shape_v7"
             or checkpoint.get("geometry_feature_names") != expected_names
         ):
