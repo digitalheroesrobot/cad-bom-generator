@@ -1,4 +1,5 @@
 import math
+import torch
 
 from shapely.geometry import LineString, Point
 
@@ -145,8 +146,8 @@ def test_reviewed_text_geometry_labels_mask_unreviewed_candidates():
     graph["text"].source_handle = ["T1", "T2"]
     graph["geometry"].source_handle = ["G1", "G2"]
     edge_type = ("text", "dimension_value_candidate", "geometry")
-    graph[edge_type].edge_index = __import__("torch").tensor([[0, 1], [0, 1]], dtype=__import__("torch").long)
-    graph[edge_type].edge_attr = __import__("torch").zeros((2, 16))
+    graph[edge_type].edge_index = torch.tensor([[0, 1], [0, 1]], dtype=torch.long)
+    graph[edge_type].edge_attr = torch.zeros((2, 16))
     graph.graph_metadata = {}
     attach_text_geometry_labels(
         graph,
