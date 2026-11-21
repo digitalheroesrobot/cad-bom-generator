@@ -49,7 +49,9 @@ def _text(handle, content, xy):
 
 def test_configurable_cad_symbols_and_part_tokens():
     config = load_text_config()
-    assert normalize_text("?10", config) == "I10"
+    custom = {"replacements": [{"pattern": r"^\?([0-9]+)$", "replacement": "I$1", "enabled": True}]}
+    assert normalize_text("?10", custom) == "I10"
+    assert normalize_text("?10", config) == "?10"
     diameter = parse_measurement_evidence("%%C6500", config)
     assert diameter["has_diameter_symbol"]
     assert diameter["diameter_value"] == 6500.0
