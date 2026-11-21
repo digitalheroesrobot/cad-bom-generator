@@ -9,7 +9,7 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 
-from .model import DXFSemanticGNN
+from .geometry_features import GEOMETRY_FEATURE_NAMES\nfrom .model import DXFSemanticGNN
 
 
 REGRESSION_TARGETS = ("length", "area", "radius")
@@ -30,7 +30,7 @@ def _load_graphs(paths):
     graphs = []
     for path in paths:
         data = torch.load(path, map_location="cpu", weights_only=False)
-        if data.graph_metadata.get("feature_version") != 7:
+        if (data.graph_metadata.get("feature_version") != 7\n                or data.graph_metadata.get("geometry_feature_schema") != "dxf_geometry_shape_v7"\n                or data.graph_metadata.get("geometry_feature_names") != list(GEOMETRY_FEATURE_NAMES)\n                or data.graph_metadata.get("geometry_feature_dimension") != 24 + len(GEOMETRY_FEATURE_NAMES)):
             raise ValueError(
                 f"{path}: expected semantic graph feature_version=7; rebuild this graph."
             )
@@ -253,7 +253,7 @@ def _save_training_checkpoint(
         "num_layers": num_layers,
         "dropout": dropout,
         "text_matching_trained": bool(text_matching_trained),
-        "feature_version": 7,
+        "feature_version": 7,\n        "geometry_feature_schema": "dxf_geometry_shape_v7",\n        "geometry_feature_names": list(GEOMETRY_FEATURE_NAMES),
         "architecture": "relation_aware_hybrid_text_match_v4_geometry_v7",
         "target_encoding": "log1p",
         "regression_targets": list(REGRESSION_TARGETS),
