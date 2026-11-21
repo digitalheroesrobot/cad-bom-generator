@@ -7,6 +7,7 @@ from app.services.dxf_engine.ai_gnn.graph_builder import (
     _geometry_feature,
     _dimension_feature,
 )
+from app.services.dxf_engine.ai_gnn.geometry_features import GEOMETRY_FEATURE_NAMES
 from app.services.dxf_engine.ai_gnn.labels import attach_geometry_targets
 from app.services.dxf_engine.ai_gnn.model import DXFSemanticGNN
 from app.services.dxf_engine.ai_gnn.train import _loss_for_graph
@@ -52,7 +53,7 @@ def test_geometry_and_dimension_feature_contract_v4():
         "is_valid": True,
         "radius": 3.0,
     }
-    assert len(_geometry_feature(linear, 1.0, (0.0, 0.0))) == 24
+    assert len(_geometry_feature(linear, 1.0, (0.0, 0.0))) == 24 + len(GEOMETRY_FEATURE_NAMES)
     assert len(_geometry_feature(circle, 1.0, (0.0, 0.0))) == 24
 
     dimension = {
@@ -110,7 +111,7 @@ def test_non_finite_measurement_labels_are_ignored():
 
 def test_relation_aware_model_outputs_positive_hybrid_measurements():
     data = HeteroData()
-    data["geometry"].x = torch.randn(2, 24)
+    data["geometry"].x = torch.randn(2, 24 + len(GEOMETRY_FEATURE_NAMES))
     data["dimension"].x = torch.randn(1, 17)
     data["anchor"].x = torch.randn(1, 12)
     data["text"].x = torch.randn(1, 41)
@@ -134,7 +135,7 @@ def test_relation_aware_model_outputs_positive_hybrid_measurements():
 
     model = DXFSemanticGNN(
         metadata=data.metadata(),
-        input_dims={"geometry": 24, "dimension": 17, "anchor": 12, "text": 41},
+        input_dims={"geometry": 24 + len(GEOMETRY_FEATURE_NAMES), "dimension": 17, "anchor": 12, "text": 41},
         edge_dims=edge_dims,
         hidden_channels=32,
         num_classes=4,
