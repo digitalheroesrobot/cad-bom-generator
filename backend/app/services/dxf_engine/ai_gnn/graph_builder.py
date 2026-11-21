@@ -470,6 +470,7 @@ def build_semantic_graph(
     connection_tolerance: float = 200.0,
     angular_tolerance_degrees: float = 3.0,
     collinear_tolerance: float = 20.0,
+    mirror_tolerance: float = 5.0,
     tangent_tolerance_degrees: float = 12.0,
     curvature_tolerance: float = 0.02,
     text_config_path: str | None = None,
@@ -804,23 +805,23 @@ def build_semantic_graph(
                 from shapely.affinity import scale as affine_scale
                 ca, cb = ga.centroid, gb.centroid
                 midpoint = ((float(ca.x) + float(cb.x)) * 0.5, (float(ca.y) + float(cb.y)) * 0.5)
-                mirror_tolerance = max(float(collinear_tolerance) * 0.25, 1e-6)
+                mirror_tol = max(float(mirror_tolerance), 1e-6)
                 best_mirror = None
                 # Search the full unoriented 180-degree axis range, including
                 # horizontal, vertical, diagonal and arbitrary orientations.
-                for axis_degrees in range(0, 180, 15):
+                for axis_degrees in range(0, 180, 5):
                     rotated = affine_rotate(gb, -axis_degrees, origin=midpoint)
                     reflected = affine_scale(rotated, xfact=-1.0, yfact=1.0, origin=midpoint)
                     reflected = affine_rotate(reflected, axis_degrees, origin=midpoint)
                     error = float(ga.hausdorff_distance(reflected))
                     if best_mirror is None or error < best_mirror[0]:
                         best_mirror = (error, axis_degrees)
-                if best_mirror and best_mirror[0] <= mirror_tolerance:
+                if best_mirror and best_mirror[0] <= mirror_tol:
                     error, axis_degrees = best_mirror
                     _add_edge(edge_store, ("geometry", "mirror_candidate", "geometry"), i, j, [
                         error / scale_safe, axis_degrees / 180.0,
                         midpoint[0] / scale_safe, midpoint[1] / scale_safe,
-                        max(0.0, 1.0 - error / mirror_tolerance),
+                        max(0.0, 1.0 - error / mirror_tol),
                     ])
             except Exception:
                 pass
@@ -1224,7 +1225,11 @@ def build_semantic_graph(
                 float(entity_type in {"CIRCLE", "ARC"}),
                 float(bool(_get(element, "is_closed", False))),
             ]
-            combined_rank = 0.70 * (distance / max(text_tolerance, 1e-9)) + 0.30 * (1.0 - semantic_score)
+            bbox_norm = min(bbox_distance / max(text_tolerance, 1e-9), 2.0)
+            center_norm = min(text_center_distance / max(text_tolerance, 1e-9), 2.0)
+            centroid_norm = min(center_distance / max(text_tolerance, 1e-9), 2.0) if math.isfinite(center_distance) else 2.0
+            spatial_rank = 0.45 * bbox_norm + 0.35 * center_norm + 0.20 * centroid_norm
+            combined_rank = 0.70 * spatial_rank + 0.30 * (1.0 - semantic_score)
             candidates.append((combined_rank, distance, -semantic_score, gi, edge_attrs))
         # Semantic compatibility participates in candidate ranking, rather
         # than being considered only after a nearest-neighbour shortlist.
@@ -1469,6 +1474,7 @@ def build_semantic_graph(
         "collinear_tolerance": float(collinear_tolerance),
         "tangent_tolerance_degrees": float(tangent_tolerance_degrees),
         "curvature_tolerance": float(curvature_tolerance),
+        "mirror_tolerance": float(mirror_tolerance),
         "origin": origin,
         "scale": float(scale_safe),
         "node_counts": {
