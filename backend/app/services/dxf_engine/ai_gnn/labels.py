@@ -210,8 +210,8 @@ def build_training_file(
         raise FileNotFoundError(f"Graph file not found: {graph_path}")
 
     data = torch.load(graph_path, map_location="cpu", weights_only=False)
-    if data.graph_metadata.get("feature_version") != 5:
-        raise ValueError("Rebuild the semantic graph with feature_version=5.")
+    if data.graph_metadata.get("feature_version") != 6:
+        raise ValueError("Rebuild the semantic graph with feature_version=6.")
 
     handle_labels = load_handle_labels(labels_path)
     class_to_id = load_class_mapping(classes_path) if classes_path else {}
