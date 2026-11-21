@@ -54,7 +54,7 @@ def test_geometry_and_dimension_feature_contract_v4():
         "radius": 3.0,
     }
     assert len(_geometry_feature(linear, 1.0, (0.0, 0.0))) == 24 + len(GEOMETRY_FEATURE_NAMES)
-    assert len(_geometry_feature(circle, 1.0, (0.0, 0.0))) == 24
+    assert len(_geometry_feature(circle, 1.0, (0.0, 0.0))) == 24 + len(GEOMETRY_FEATURE_NAMES)
 
     dimension = {
         "endpoints": [(0, 0), (0, 20)],
