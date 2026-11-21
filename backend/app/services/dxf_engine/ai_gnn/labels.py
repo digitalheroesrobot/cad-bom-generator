@@ -4,7 +4,9 @@ import csv
 import json
 import math
 from pathlib import Path
-import torch\n\nfrom .geometry_features import GEOMETRY_FEATURE_NAMES
+import torch
+
+from .geometry_features import GEOMETRY_FEATURE_NAMES
 
 
 def _read_label_rows(path: str | Path):
