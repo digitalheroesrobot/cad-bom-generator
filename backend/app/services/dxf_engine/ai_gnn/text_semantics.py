@@ -34,8 +34,8 @@ def normalize_text(content, config):
         # re.sub expects \\g<1>, so translate numbered references and expand
         # them per match. This also keeps normal literal replacements intact.
         replacement = re.sub(
-            r"\\$(\\d+)",
-            lambda match: r"\\g<" + match.group(1) + ">",
+            r"\$(\d+)",
+            lambda match: r"\g<" + match.group(1) + ">",
             replacement,
         )
         compiled = re.compile(pattern, flags=flags)
