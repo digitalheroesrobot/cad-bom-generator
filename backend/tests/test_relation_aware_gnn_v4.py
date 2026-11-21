@@ -119,7 +119,8 @@ def test_relation_aware_model_outputs_positive_hybrid_measurements():
         (("dimension", "measures_from", "anchor"), 2, [[0], [0]]),
         (("anchor", "rev_measures_from", "dimension"), 2, [[0], [0]]),
         (("dimension", "describes", "geometry"), 2, [[0], [0]]),
-        (("text", "labels", "dimension"), 2, [[0], [0]]),
+        (("text", "labels", "dimension"), 9, [[0], [0]]),
+        (("text", "dimension_value_candidate", "geometry"), 16, [[0], [0]]),
         (("geometry", "equal_length_candidate", "geometry"), 3, [[0], [1]]),
     ]
     for edge_type, width, indices in relations:
@@ -146,4 +147,5 @@ def test_relation_aware_model_outputs_positive_hybrid_measurements():
     assert torch.all(evidence["direct_raw"] >= 0)
     assert torch.all(evidence["relation_raw"] >= 0)
     assert torch.all(evidence["fused_raw"] >= 0)
+    assert evidence["text_match_logits"][("text", "dimension_value_candidate", "geometry")].shape == (1,)
     assert torch.all((evidence["fusion_weight"] >= 0) & (evidence["fusion_weight"] <= 1))
