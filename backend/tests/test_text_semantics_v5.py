@@ -121,6 +121,8 @@ def test_annotation_is_preserved_but_never_connected_to_geometry():
     edge_type = ("text", "dimension_value_candidate", "geometry")
     edge_index = graph[edge_type].edge_index
     assert edge_index.size(1) == 1
+    assert graph[edge_type].edge_attr.shape[1] == 16
+    assert abs(float(graph[edge_type].edge_attr[0, 14])) < 1e-4
     assert int(edge_index[0, 0]) == 0
     assert int(edge_index[1, 0]) == 0
     # Annotation text remains a node and may contextualize a dimension, but
