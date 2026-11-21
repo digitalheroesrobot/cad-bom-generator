@@ -115,8 +115,16 @@ def _loss_for_graph(logits, measurement_log, evidence, data, class_weight=1.0,
         match_targets = getattr(store, "match_y", None)
         if match_mask is None or match_targets is None or not bool(match_mask.any()):
             continue
+        selected_targets = match_targets[match_mask]
+        positive_count = selected_targets.sum()
+        negative_count = selected_targets.numel() - positive_count
+        positive_weight = (
+            (negative_count / positive_count.clamp(min=1.0)).clamp(min=0.25, max=10.0)
+            if positive_count > 0 else selected_targets.new_tensor(1.0)
+        )
         match_loss = F.binary_cross_entropy_with_logits(
-            match_logits[match_mask], match_targets[match_mask]
+            match_logits[match_mask], selected_targets,
+            pos_weight=positive_weight.reshape(1),
         )
         losses.append(0.5 * match_loss)
         details[f"text_match_{edge_type[1]}"] = match_loss.detach()
