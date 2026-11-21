@@ -100,6 +100,9 @@ def test_annotation_is_retained_but_never_links_to_geometry_or_dimension():
     )
 
     assert graph.graph_metadata["feature_version"] == 7
+    assert graph["geometry"].x.shape[1] == 45
+    assert graph.graph_metadata["geometry_feature_dimension"] == 45
+    assert len(graph.graph_metadata["geometry_feature_names"]) == 21
     assert graph["text"].semantic_type == ["DIMENSION_VALUE", "ANNOTATION"]
 
     relation = ("text", "dimension_value_candidate", "geometry")
