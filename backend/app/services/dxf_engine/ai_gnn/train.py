@@ -34,7 +34,8 @@ def _load_graphs(paths):
         if (data.graph_metadata.get("feature_version") != 7
                 or data.graph_metadata.get("geometry_feature_schema") != "dxf_geometry_shape_v7"
                 or data.graph_metadata.get("geometry_feature_names") != list(GEOMETRY_FEATURE_NAMES)
-                or data.graph_metadata.get("geometry_feature_dimension") != 24 + len(GEOMETRY_FEATURE_NAMES)):
+                or data.graph_metadata.get("geometry_feature_dimension") != 24 + len(GEOMETRY_FEATURE_NAMES)
+                or data["geometry"].x.size(-1) != 24 + len(GEOMETRY_FEATURE_NAMES)):
             raise ValueError(
                 f"{path}: expected semantic graph feature_version=7; rebuild this graph."
             )
