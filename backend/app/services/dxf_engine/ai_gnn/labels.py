@@ -83,6 +83,70 @@ def attach_labels(data, handle_labels: dict[str, str], class_to_id: dict[str, in
     return data
 
 
+def load_text_geometry_labels(path: str | Path) -> dict[tuple[str, str, str], int]:
+    """Load reviewed text-to-geometry correspondences from CSV/JSON rows.
+
+    Required fields: text_handle, geometry_handle, is_match.
+    Optional relation_type is a semantic candidate relation name; '*' labels
+    every semantic relation for that text/geometry pair.
+    """
+    result = {}
+    for row in _read_label_rows(path):
+        text_handle = row.get("text_handle")
+        geometry_handle = row.get("geometry_handle")
+        raw_match = row.get("is_match")
+        if not text_handle or not geometry_handle or raw_match in (None, ""):
+            continue
+        value = str(raw_match).strip().lower()
+        if value in {"1", "true", "yes", "y", "match", "positive"}:
+            label = 1
+        elif value in {"0", "false", "no", "n", "nonmatch", "negative"}:
+            label = 0
+        else:
+            continue
+        relation = str(row.get("relation_type") or "*").strip()
+        result[(str(text_handle).strip(), str(geometry_handle).strip(), relation)] = label
+    return result
+
+
+def attach_text_geometry_labels(data, labels):
+    """Attach binary match targets to candidate text-to-geometry edges."""
+    handles_text = [str(v) for v in data["text"].source_handle]
+    handles_geometry = [str(v) for v in data["geometry"].source_handle]
+    candidate_relations = {
+        "dimension_value_candidate", "part_label_candidate",
+        "geometry_description_candidate", "gdt_candidate",
+    }
+    counts = {"positive": 0, "negative": 0, "unlabeled": 0}
+    for edge_type in data.edge_types:
+        if edge_type[0] != "text" or edge_type[2] != "geometry" or edge_type[1] not in candidate_relations:
+            continue
+        edge_index = data[edge_type].edge_index
+        targets, mask = [], []
+        for edge_i in range(edge_index.size(1)):
+            text_index, geometry_index = int(edge_index[0, edge_i]), int(edge_index[1, edge_i])
+            text_handle, geometry_handle = handles_text[text_index], handles_geometry[geometry_index]
+            label = labels.get(
+                (text_handle, geometry_handle, edge_type[1]),
+                labels.get((text_handle, geometry_handle, "*")),
+            )
+            if label is None:
+                targets.append(0)
+                mask.append(False)
+                counts["unlabeled"] += 1
+            else:
+                targets.append(int(label))
+                mask.append(True)
+                counts["positive" if label else "negative"] += 1
+        data[edge_type].match_y = torch.tensor(targets, dtype=torch.float)
+        data[edge_type].match_mask = torch.tensor(mask, dtype=torch.bool)
+    data.graph_metadata["text_geometry_supervision"] = {
+        "provenance": "reviewed_text_geometry_correspondence_labels",
+        "counts": counts,
+    }
+    return data
+
+
 def attach_geometry_targets(data, targets: dict[str, dict[str, float]]):
     """Attach log1p regression targets with independent per-task masks."""
     handles = data["geometry"].source_handle
@@ -161,6 +225,7 @@ def build_training_file(
 
     targets = load_geometry_targets(labels_path)
     data = attach_geometry_targets(data, targets)
+    data = attach_text_geometry_labels(data, load_text_geometry_labels(labels_path))
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(data, output_path)
@@ -174,6 +239,7 @@ def build_training_file(
     print(f"Class labels     : {int(data['geometry'].class_mask.sum())}")
     for name in ("length", "area", "radius"):
         print(f"{name.title():16s}: {int(data['geometry'][name + '_mask'].sum())}")
+    print(f"Text link labels : {data.graph_metadata.get('text_geometry_supervision', {}).get('counts', {})}")
     print("=" * 60)
     return data
 
