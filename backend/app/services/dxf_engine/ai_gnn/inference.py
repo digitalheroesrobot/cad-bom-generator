@@ -184,15 +184,16 @@ def predict_geometry(data, checkpoint_path: str, device: str | None = None):
     area_valid = getattr(data["geometry"], "measured_area_valid", [False] * len(geometry_handles))
     radius_valid = getattr(data["geometry"], "radius_valid", [False] * len(geometry_handles))
     text_match_probabilities = {}
-    for edge_type, match_logits in evidence.get("text_match_logits", {}).items():
-        edge_index = data[edge_type].edge_index
-        probabilities = torch.sigmoid(match_logits)
-        for edge_i in range(edge_index.size(1)):
-            source_index = int(edge_index[0, edge_i])
-            target_index = int(edge_index[1, edge_i])
-            text_match_probabilities[(edge_type, source_index, target_index)] = float(
-                probabilities[edge_i].detach().cpu()
-            )
+    if checkpoint.get("text_matching_trained", False):
+        for edge_type, match_logits in evidence.get("text_match_logits", {}).items():
+            edge_index = data[edge_type].edge_index
+            probabilities = torch.sigmoid(match_logits)
+            for edge_i in range(edge_index.size(1)):
+                source_index = int(edge_index[0, edge_i])
+                target_index = int(edge_index[1, edge_i])
+                text_match_probabilities[(edge_type, source_index, target_index)] = float(
+                    probabilities[edge_i].detach().cpu()
+                )
 
     predictions = []
     for geometry_index in range(len(class_ids)):
@@ -347,5 +348,6 @@ def predict_geometry(data, checkpoint_path: str, device: str | None = None):
             "area": _optional_float(analytic_areas, geometry_index),
             "dimension_candidates": list(unique_dimensions.values()),
             "text_candidates": text_candidates,
+            "text_matching_trained": bool(checkpoint.get("text_matching_trained", False)),
         })
     return predictions
