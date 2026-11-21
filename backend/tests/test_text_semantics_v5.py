@@ -7,6 +7,9 @@ from app.services.dxf_engine.ai_gnn.graph_builder import (
     _collinear_score,
     build_semantic_graph,
 )
+from app.services.dxf_engine.ai_gnn.labels import attach_text_geometry_labels
+from torch_geometric.data import HeteroData
+
 from app.services.dxf_engine.ai_gnn.text_semantics import (
     classify_text,
     load_text_config,
@@ -134,3 +137,21 @@ def test_annotation_is_preserved_but_never_connected_to_geometry():
         edges = graph[("text", relation, "geometry")].edge_index
         assert not bool((edges[0] == 1).any())
     assert graph[("text", "labels", "dimension")].edge_index.size(1) >= 1
+
+
+
+def test_reviewed_text_geometry_labels_mask_unreviewed_candidates():
+    graph = HeteroData()
+    graph["text"].source_handle = ["T1", "T2"]
+    graph["geometry"].source_handle = ["G1", "G2"]
+    edge_type = ("text", "dimension_value_candidate", "geometry")
+    graph[edge_type].edge_index = __import__("torch").tensor([[0, 1], [0, 1]], dtype=__import__("torch").long)
+    graph[edge_type].edge_attr = __import__("torch").zeros((2, 16))
+    graph.graph_metadata = {}
+    attach_text_geometry_labels(
+        graph,
+        {("T1", "G1", "dimension_value_candidate"): 1},
+    )
+    assert graph[edge_type].match_y.tolist() == [1.0, 0.0]
+    assert graph[edge_type].match_mask.tolist() == [True, False]
+    assert graph.graph_metadata["text_geometry_supervision"]["counts"]["positive"] == 1
