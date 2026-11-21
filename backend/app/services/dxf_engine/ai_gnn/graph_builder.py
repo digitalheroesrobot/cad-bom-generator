@@ -286,7 +286,7 @@ def _endpoint_points(geometry):
     return points
 
 
-def _representative_direction(geometry):
+def _representative_direction(geometry, angular_tolerance_degrees=3.0):
     # A single orientation is meaningful only for a straight open line.
     # Do not infer one from a circle, closed profile, bent polyline, or arc.
     if geometry is None or geometry.geom_type != "LineString":
@@ -295,7 +295,7 @@ def _representative_direction(geometry):
     if not segments:
         return None
     reference = max(segments, key=lambda item: item["length"])["direction"]
-    tolerance = math.radians(3.0)
+    tolerance = math.radians(max(0.0, angular_tolerance_degrees))
     if any(
         (_angle_between(reference, segment["direction"]) or 0.0) > tolerance
         for segment in segments
@@ -304,11 +304,11 @@ def _representative_direction(geometry):
     return reference
 
 
-def _collinear_score(geometry_a, geometry_b, direction_a, direction_b, tolerance):
+def _collinear_score(geometry_a, geometry_b, direction_a, direction_b, tolerance, angular_tolerance_degrees=3.0):
     if direction_a is None or direction_b is None:
         return 0.0
     angle = _angle_between(direction_a, direction_b)
-    if angle is None or angle > math.radians(3.0):
+    if angle is None or angle > math.radians(max(0.0, angular_tolerance_degrees)):
         return 0.0
     segments_a = _segment_records(geometry_a)
     segments_b = _segment_records(geometry_b)
@@ -722,8 +722,8 @@ def build_semantic_graph(
             except Exception:
                 continue
 
-            dir_a = _representative_direction(ga)
-            dir_b = _representative_direction(gb)
+            dir_a = _representative_direction(ga, angular_tolerance_degrees)
+            dir_b = _representative_direction(gb, angular_tolerance_degrees)
             angle_diff = _angle_between(dir_a, dir_b)
             endpoints_a = _endpoint_points(ga)
             endpoints_b = _endpoint_points(gb)
@@ -732,7 +732,8 @@ def build_semantic_graph(
                 default=float("inf"),
             )
             collinear_score = _collinear_score(
-                ga, gb, dir_a, dir_b, collinear_tolerance
+                ga, gb, dir_a, dir_b, collinear_tolerance,
+                angular_tolerance_degrees,
             )
             seg_a, seg_b = _segment_records(ga), _segment_records(gb)
             tangent_continuity = 0.0
