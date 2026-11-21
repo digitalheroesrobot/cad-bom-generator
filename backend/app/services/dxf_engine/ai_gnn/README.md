@@ -282,6 +282,9 @@ Each prediction exposes:
 - `measurement_validity`
 - `raw_dxf_radius` and `analytic_radius`
 - associated dimension, anchor, and text candidates
+- text-candidate spatial distances, semantic compatibility, geometry/entity
+  type indicators, shape descriptors, and linked DIAMETRIC/RADIUS dimension
+  agreement evidence
 
 Area and radius are returned as `None` when the geometry is not eligible.
 Candidate relations remain evidence, not verified engineering constraints.
